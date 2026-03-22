@@ -252,20 +252,10 @@ function CfnDiagramView({ diagram }: { diagram: Diagram }) {
     return () => window.removeEventListener('mouseup', stop)
   }, [])
 
+  /* disable wheel zoom – only buttons control zoom */
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
-    const container = containerRef.current
-    if (!container) return
-    const rect = container.getBoundingClientRect()
-    const cx = e.clientX - rect.left
-    const cy = e.clientY - rect.top
-    const oldScale = zoom / 100
-    const delta = e.deltaY > 0 ? -10 : 10
-    const newZoom = Math.min(400, Math.max(15, zoom + delta))
-    const newScale = newZoom / 100
-    setPan({ x: cx - (cx - pan.x) * (newScale / oldScale), y: cy - (cy - pan.y) * (newScale / oldScale) })
-    setZoom(newZoom)
-  }, [zoom, pan])
+  }, [])
 
   const portOffsets = useMemo(() => {
     const outCount = new Map<string, number>()

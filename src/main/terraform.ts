@@ -43,12 +43,13 @@ type ProjectEvent =
   | { type: 'progress'; projectId: string; address: string; status: string; raw: string }
   | { type: 'completed'; projectId: string; log: TerraformCommandLog; project: TerraformProject | null }
 
-const INPUTS_FILE = '.terraform-workspace.auto.tfvars.json'
+const INPUTS_FILE = 'terraform-workspace.auto.tfvars.json'
 const PLAN_FILE = '.terraform-workspace.tfplan'
 const STATE_CACHE_FILE = '.terraform-workspace.state.json'
 
 const commandLogs = new Map<string, TerraformCommandLog[]>()
 const savedPlanPaths = new Map<string, string>()
+const activeDestructiveCommands = new Map<string, 'apply' | 'destroy'>()
 
 /* ── Helpers ──────────────────────────────────────────────── */
 
@@ -73,6 +74,10 @@ function listTerraformFiles(rootPath: string): string[] {
 
 function managedInputsPath(rootPath: string): string {
   return path.join(rootPath, INPUTS_FILE)
+}
+
+function temporaryStateVarFilePath(rootPath: string): string {
+  return path.join(rootPath, 'terraform.tfvars.json')
 }
 
 function stateCachePath(rootPath: string): string {
@@ -693,11 +698,79 @@ function resolveVarFilePath(varFile: string, rootPath: string): string {
   return fs.existsSync(resolved) ? resolved : ''
 }
 
-function readJsonVarFile(varFilePath: string): Record<string, unknown> {
+function parseSimpleHclValue(raw: string): unknown {
+  const value = raw.trim().replace(/,$/, '').trim()
+
+  if (!value) return ''
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    const inner = value.slice(1, -1)
+    return inner
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\')
+  }
+  if (value === 'true') return true
+  if (value === 'false') return false
+  if (value === 'null') return null
+  if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value)
+  if ((value.startsWith('[') && value.endsWith(']')) || (value.startsWith('{') && value.endsWith('}'))) {
+    try {
+      return JSON.parse(value)
+    } catch {
+      return value
+    }
+  }
+
+  return value
+}
+
+function stripLineComments(line: string): string {
+  let inSingle = false
+  let inDouble = false
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]
+    const prev = i > 0 ? line[i - 1] : ''
+
+    if (char === "'" && !inDouble && prev !== '\\') {
+      inSingle = !inSingle
+      continue
+    }
+    if (char === '"' && !inSingle && prev !== '\\') {
+      inDouble = !inDouble
+      continue
+    }
+    if (!inSingle && !inDouble) {
+      if (char === '#') return line.slice(0, i)
+      if (char === '/' && line[i + 1] === '/') return line.slice(0, i)
+    }
+  }
+
+  return line
+}
+
+function readVarFileValues(varFilePath: string): Record<string, unknown> {
   if (!varFilePath) return {}
   const lower = varFilePath.toLowerCase()
-  if (!lower.endsWith('.json') && !lower.endsWith('.tfvars.json')) return {}
-  return parseJsonFile<Record<string, unknown>>(varFilePath, {})
+  if (lower.endsWith('.json') || lower.endsWith('.tfvars.json')) {
+    return parseJsonFile<Record<string, unknown>>(varFilePath, {})
+  }
+  if (!lower.endsWith('.tfvars')) return {}
+
+  const result: Record<string, unknown> = {}
+  const lines = readText(varFilePath).split(/\r?\n/)
+
+  for (const rawLine of lines) {
+    const line = stripLineComments(rawLine).trim()
+    if (!line) continue
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/)
+    if (!match) continue
+    result[match[1]] = parseSimpleHclValue(match[2])
+  }
+
+  return result
 }
 
 function buildEnvWithVars(project: StoredProject): Record<string, string> {
@@ -718,7 +791,7 @@ function buildEnvWithVars(project: StoredProject): Record<string, string> {
     env.XDG_CONFIG_HOME = tmpDir
   }
   const resolvedVarFile = resolveVarFilePath(project.varFile, project.rootPath)
-  const varFileValues = readJsonVarFile(resolvedVarFile)
+  const varFileValues = readVarFileValues(resolvedVarFile)
   // Export variables as TF_VAR_*
   for (const [key, value] of Object.entries(varFileValues)) {
     if (typeof value === 'string') env[`TF_VAR_${key}`] = value
@@ -734,8 +807,65 @@ function buildEnvWithVars(project: StoredProject): Record<string, string> {
 }
 
 function writeAutoTfvars(project: StoredProject): void {
-  if (project.variables && typeof project.variables === 'object' && Object.keys(project.variables).length > 0) {
-    fs.writeFileSync(managedInputsPath(project.rootPath), JSON.stringify(project.variables, null, 2) + '\n', 'utf-8')
+  const mergedValues = readMergedInputValues(project)
+  const outputPath = managedInputsPath(project.rootPath)
+  const legacyOutputPath = path.join(project.rootPath, '.terraform-workspace.auto.tfvars.json')
+
+  try {
+    if (legacyOutputPath !== outputPath && fs.existsSync(legacyOutputPath)) {
+      fs.unlinkSync(legacyOutputPath)
+    }
+  } catch {
+    /* ok */
+  }
+
+  if (Object.keys(mergedValues).length > 0) {
+    fs.writeFileSync(outputPath, JSON.stringify(mergedValues, null, 2) + '\n', 'utf-8')
+    return
+  }
+
+  try {
+    fs.unlinkSync(outputPath)
+  } catch {
+    /* ok */
+  }
+}
+
+function readMergedInputValues(project: StoredProject): Record<string, unknown> {
+  const resolvedVarFile = resolveVarFilePath(project.varFile, project.rootPath)
+  return {
+    ...readVarFileValues(resolvedVarFile),
+    ...((project.variables && typeof project.variables === 'object') ? project.variables : {})
+  }
+}
+
+function prepareStateCommandVarFile(project: StoredProject): (() => void) | null {
+  const mergedValues = readMergedInputValues(project)
+  if (Object.keys(mergedValues).length === 0) {
+    return null
+  }
+
+  const tempPath = temporaryStateVarFilePath(project.rootPath)
+  const backupPath = `${tempPath}.aws-lens-backup`
+  const hadExistingFile = fs.existsSync(tempPath)
+
+  if (hadExistingFile) {
+    fs.copyFileSync(tempPath, backupPath)
+  }
+
+  fs.writeFileSync(tempPath, JSON.stringify(mergedValues, null, 2) + '\n', 'utf-8')
+
+  return () => {
+    try {
+      if (hadExistingFile) {
+        fs.copyFileSync(backupPath, tempPath)
+        fs.unlinkSync(backupPath)
+      } else if (fs.existsSync(tempPath)) {
+        fs.unlinkSync(tempPath)
+      }
+    } catch {
+      /* ok */
+    }
   }
 }
 
@@ -823,70 +953,71 @@ function normalizeStored(raw: Record<string, unknown>): StoredProject | null {
   }
 }
 
-function getStoredProjects(): StoredProject[] {
-  return (getProjects() as unknown as Record<string, unknown>[])
+function getStoredProjects(profileName: string): StoredProject[] {
+  return (getProjects(profileName) as unknown as Record<string, unknown>[])
     .map(normalizeStored)
     .filter((p): p is StoredProject => p !== null)
 }
 
-function setStoredProjects(projects: StoredProject[]): void {
-  setProjects(projects as unknown as Array<{ id: string; name: string; rootPath: string }>)
+function setStoredProjects(profileName: string, projects: StoredProject[]): void {
+  setProjects(profileName, projects as unknown as Array<{ id: string; name: string; rootPath: string }>)
 }
 
-export function listProjectSummaries(): TerraformProjectListItem[] {
-  return getStoredProjects().map(loadProject)
+export function listProjectSummaries(profileName: string): TerraformProjectListItem[] {
+  return getStoredProjects(profileName).map(loadProject)
 }
 
-export function getProject(projectId: string): TerraformProject {
-  const project = getStoredProjects().find((p) => p.id === projectId)
+export function getProject(profileName: string, projectId: string): TerraformProject {
+  const project = getStoredProjects(profileName).find((p) => p.id === projectId)
   if (!project) throw new Error('Project not found.')
   return loadProject(project)
 }
 
-export function addProject(rootPath: string): TerraformProject {
+export function addProject(profileName: string, rootPath: string): TerraformProject {
   const normalized = path.resolve(rootPath)
   if (!fs.existsSync(normalized)) throw new Error('Selected path does not exist.')
   if (!fs.statSync(normalized).isDirectory()) throw new Error('Project path must be a directory.')
   if (listTerraformFiles(normalized).length === 0) throw new Error('No Terraform files were found in the selected directory.')
 
-  const stored = getStoredProjects()
+  const stored = getStoredProjects(profileName)
   const existing = stored.find((p) => path.normalize(p.rootPath).toLowerCase() === path.normalize(normalized).toLowerCase())
   if (existing) return loadProject(existing)
 
   const created: StoredProject = {
     id: randomUUID(), name: path.basename(normalized), rootPath: normalized, varFile: '', variables: {}
   }
-  setStoredProjects([...stored, created])
+  setStoredProjects(profileName, [...stored, created])
   return loadProject(created)
 }
 
-export function removeProject(projectId: string): void {
-  setStoredProjects(getStoredProjects().filter((p) => p.id !== projectId))
+export function removeProject(profileName: string, projectId: string): void {
+  setStoredProjects(profileName, getStoredProjects(profileName).filter((p) => p.id !== projectId))
   commandLogs.delete(projectId)
   savedPlanPaths.delete(projectId)
 }
 
-export function renameProject(projectId: string, name: string): TerraformProject {
+export function renameProject(profileName: string, projectId: string, name: string): TerraformProject {
   const trimmed = name.trim()
   if (!trimmed) throw new Error('Project name is required.')
-  const updated = getStoredProjects().map((p) => p.id === projectId ? { ...p, name: trimmed } : p)
-  setStoredProjects(updated)
-  return getProject(projectId)
+  const updated = getStoredProjects(profileName).map((p) => p.id === projectId ? { ...p, name: trimmed } : p)
+  setStoredProjects(profileName, updated)
+  return getProject(profileName, projectId)
 }
 
 export function updateProjectInputs(
+  profileName: string,
   projectId: string,
   inputs: Record<string, unknown>,
   varFile?: string
 ): TerraformProject {
-  const stored = getStoredProjects()
+  const stored = getStoredProjects(profileName)
   const idx = stored.findIndex((p) => p.id === projectId)
   if (idx < 0) throw new Error('Project not found.')
   const project = stored[idx]
   if (varFile !== undefined) project.varFile = varFile
   project.variables = inputs
   writeAutoTfvars(project)
-  setStoredProjects(stored)
+  setStoredProjects(profileName, stored)
   return loadProject(project)
 }
 
@@ -897,15 +1028,17 @@ export function getCommandLogs(projectId: string): TerraformCommandLog[] {
 /* ── Missing variable detection ───────────────────────────── */
 
 export function detectMissingVars(output: string): TerraformMissingVarsResult {
-  const missing: string[] = []
-  const invalid: string[] = []
+  const missing = new Set<string>()
+
   for (const m of output.matchAll(/The root module input variable "([^"]+)" is not set/g)) {
-    missing.push(m[1])
+    missing.add(m[1])
   }
-  for (const m of output.matchAll(/variable "([^"]+)" \{/g)) {
-    invalid.push(m[1])
+
+  for (const m of output.matchAll(/No value for required variable[\s\S]*?variable "([^"]+)" \{/g)) {
+    missing.add(m[1])
   }
-  return { missing, invalid }
+
+  return { missing: [...missing], invalid: [] }
 }
 
 /* ── CloudTrail ChangedBy Enrichment ──────────────────────── */
@@ -1024,17 +1157,20 @@ export async function runProjectCommand(
   request: TerraformCommandRequest,
   window: BrowserWindow | null
 ): Promise<TerraformCommandLog> {
-  const stored = getStoredProjects()
+  const stored = getStoredProjects(request.profileName)
   const project = stored.find((p) => p.id === request.projectId)
   if (!project) throw new Error('Project not found.')
 
   // Ensure auto.tfvars is written before commands that need it
-  if (['plan', 'apply', 'destroy'].includes(request.command)) {
+  if (['init', 'plan', 'apply', 'destroy', 'state-list', 'state-pull', 'state-show'].includes(request.command)) {
     writeAutoTfvars(project)
   }
 
   const args = buildArgs(request, project)
   const env = buildEnvWithVars(project)
+  const cleanupStateVarFile = ['state-list', 'state-pull', 'state-show'].includes(request.command)
+    ? prepareStateCommandVarFile(project)
+    : null
   const log: TerraformCommandLog = {
     id: randomUUID(), projectId: request.projectId, command: request.command,
     args, startedAt: new Date().toISOString(), finishedAt: null, exitCode: null,
@@ -1043,6 +1179,10 @@ export async function runProjectCommand(
 
   pushLog(request.projectId, log)
   emit(window, { type: 'started', projectId: request.projectId, log })
+
+  if (request.command === 'apply' || request.command === 'destroy') {
+    activeDestructiveCommands.set(request.projectId, request.command)
+  }
 
   let lastProgressTime = 0
 
@@ -1104,7 +1244,16 @@ export async function runProjectCommand(
     log.output += `\n${error instanceof Error ? error.message : String(error)}`
     emit(window, { type: 'completed', projectId: request.projectId, log, project: loadProject(project) })
     return log
+  } finally {
+    cleanupStateVarFile?.()
+    if (request.command === 'apply' || request.command === 'destroy') {
+      activeDestructiveCommands.delete(request.projectId)
+    }
   }
+}
+
+export function hasActiveTerraformApplyOrDestroy(): boolean {
+  return activeDestructiveCommands.size > 0
 }
 
 export function hasSavedPlan(projectId: string): boolean {

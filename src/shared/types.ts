@@ -1452,6 +1452,7 @@ export type TerraformProject = {
 }
 
 export type TerraformCommandRequest = {
+  profileName: string
   projectId: string
   command: TerraformCommandName
   stateAddress?: string

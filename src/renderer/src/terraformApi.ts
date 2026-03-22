@@ -29,12 +29,12 @@ export async function getCliInfo(): Promise<TerraformCliInfo> {
   return unwrap(await bridge().getCliInfo() as Wrapped<TerraformCliInfo>)
 }
 
-export async function listProjects(): Promise<TerraformProjectListItem[]> {
-  return unwrap(await bridge().listProjects() as Wrapped<TerraformProjectListItem[]>)
+export async function listProjects(profileName: string): Promise<TerraformProjectListItem[]> {
+  return unwrap(await bridge().listProjects(profileName) as Wrapped<TerraformProjectListItem[]>)
 }
 
-export async function getProject(projectId: string): Promise<TerraformProject> {
-  return unwrap(await bridge().getProject(projectId) as Wrapped<TerraformProject>)
+export async function getProject(profileName: string, projectId: string): Promise<TerraformProject> {
+  return unwrap(await bridge().getProject(profileName, projectId) as Wrapped<TerraformProject>)
 }
 
 export async function chooseProjectDirectory(): Promise<string> {
@@ -45,32 +45,32 @@ export async function chooseVarFile(): Promise<string> {
   return unwrap(await bridge().chooseVarFile() as Wrapped<string>)
 }
 
-export async function addProject(rootPath: string): Promise<TerraformProject> {
-  return unwrap(await bridge().addProject(rootPath) as Wrapped<TerraformProject>)
+export async function addProject(profileName: string, rootPath: string): Promise<TerraformProject> {
+  return unwrap(await bridge().addProject(profileName, rootPath) as Wrapped<TerraformProject>)
 }
 
-export async function renameProject(projectId: string, name: string): Promise<TerraformProject> {
-  return unwrap(await bridge().renameProject(projectId, name) as Wrapped<TerraformProject>)
+export async function renameProject(profileName: string, projectId: string, name: string): Promise<TerraformProject> {
+  return unwrap(await bridge().renameProject(profileName, projectId, name) as Wrapped<TerraformProject>)
 }
 
-export async function removeProject(projectId: string): Promise<void> {
-  return unwrap(await bridge().removeProject(projectId) as Wrapped<void>)
+export async function removeProject(profileName: string, projectId: string): Promise<void> {
+  return unwrap(await bridge().removeProject(profileName, projectId) as Wrapped<void>)
 }
 
-export async function reloadProject(projectId: string): Promise<TerraformProject> {
-  return unwrap(await bridge().reloadProject(projectId) as Wrapped<TerraformProject>)
+export async function reloadProject(profileName: string, projectId: string): Promise<TerraformProject> {
+  return unwrap(await bridge().reloadProject(profileName, projectId) as Wrapped<TerraformProject>)
 }
 
-export async function getSelectedProjectId(): Promise<string> {
-  return unwrap(await bridge().getSelectedProjectId() as Wrapped<string>)
+export async function getSelectedProjectId(profileName: string): Promise<string> {
+  return unwrap(await bridge().getSelectedProjectId(profileName) as Wrapped<string>)
 }
 
-export async function setSelectedProjectId(projectId: string): Promise<void> {
-  return unwrap(await bridge().setSelectedProjectId(projectId) as Wrapped<void>)
+export async function setSelectedProjectId(profileName: string, projectId: string): Promise<void> {
+  return unwrap(await bridge().setSelectedProjectId(profileName, projectId) as Wrapped<void>)
 }
 
-export async function updateInputs(projectId: string, inputs: Record<string, unknown>, varFile?: string): Promise<TerraformProject> {
-  return unwrap(await bridge().updateInputs(projectId, inputs, varFile) as Wrapped<TerraformProject>)
+export async function updateInputs(profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string): Promise<TerraformProject> {
+  return unwrap(await bridge().updateInputs(profileName, projectId, inputs, varFile) as Wrapped<TerraformProject>)
 }
 
 export async function listCommandLogs(projectId: string): Promise<TerraformCommandLog[]> {

@@ -284,16 +284,16 @@ declare global {
       getIamCredentialReport: (c: AwsConnection) => Promise<unknown>
     }
     terraformWorkspace: {
-      listProjects: () => Promise<unknown>
-      getProject: (projectId: string) => Promise<unknown>
+      listProjects: (profileName: string) => Promise<unknown>
+      getProject: (profileName: string, projectId: string) => Promise<unknown>
       chooseProjectDirectory: () => Promise<unknown>
-      addProject: (rootPath: string) => Promise<unknown>
-      renameProject: (projectId: string, name: string) => Promise<unknown>
-      removeProject: (projectId: string) => Promise<unknown>
-      reloadProject: (projectId: string) => Promise<unknown>
-      getSelectedProjectId: () => Promise<unknown>
-      setSelectedProjectId: (projectId: string) => Promise<unknown>
-      updateInputs: (projectId: string, inputs: Record<string, unknown>) => Promise<unknown>
+      addProject: (profileName: string, rootPath: string) => Promise<unknown>
+      renameProject: (profileName: string, projectId: string, name: string) => Promise<unknown>
+      removeProject: (profileName: string, projectId: string) => Promise<unknown>
+      reloadProject: (profileName: string, projectId: string) => Promise<unknown>
+      getSelectedProjectId: (profileName: string) => Promise<unknown>
+      setSelectedProjectId: (profileName: string, projectId: string) => Promise<unknown>
+      updateInputs: (profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) => Promise<unknown>
       listCommandLogs: (projectId: string) => Promise<unknown>
       runCommand: (request: TerraformCommandRequest) => Promise<unknown>
       subscribe: (listener: (event: unknown) => void) => void

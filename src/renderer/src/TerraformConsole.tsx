@@ -60,6 +60,10 @@ function validateVariablesJson(text: string): { parsed: Record<string, unknown> 
   }
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))]
+}
+
 function parsePlanSummaryFromOutput(output: string): TerraformProject['lastPlanSummary'] | null {
   const match = output.match(/Plan:\s*(\d+)\s+to add,\s*(\d+)\s+to change,\s*(\d+)\s+to destroy\./i)
   if (!match) return null
@@ -116,6 +120,11 @@ function InputsDialog({
         <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
           You can provide a .tfvars file, JSON variables, or both. Variables are exported as TF_VAR_* and written to an auto.tfvars.json file.
         </p>
+        {prefillMissing && prefillMissing.length > 0 && (
+          <p style={{ margin: 0, fontSize: 12, color: '#f39c12' }}>
+            Required now: {uniqueStrings(prefillMissing).join(', ')}
+          </p>
+        )}
         <label>
           Var File Path
           <div style={{ display: 'flex', gap: 6 }}>
@@ -414,28 +423,10 @@ function DiagramView({ diagram }: { diagram: TerraformDiagram }) {
     return () => window.removeEventListener('mouseup', stop)
   }, [])
 
-  /* ── wheel zoom (zooms toward cursor) ──────────────────── */
+  /* ── disable wheel zoom – only buttons control zoom ──── */
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
-    const container = containerRef.current
-    if (!container) return
-    const rect = container.getBoundingClientRect()
-    // cursor position relative to the container
-    const cx = e.clientX - rect.left
-    const cy = e.clientY - rect.top
-
-    const oldScale = zoom / 100
-    const delta = e.deltaY > 0 ? -10 : 10
-    const newZoom = Math.min(400, Math.max(15, zoom + delta))
-    const newScale = newZoom / 100
-
-    // adjust pan so the point under the cursor stays fixed
-    const newPanX = cx - (cx - pan.x) * (newScale / oldScale)
-    const newPanY = cy - (cy - pan.y) * (newScale / oldScale)
-
-    setZoom(newZoom)
-    setPan({ x: newPanX, y: newPanY })
-  }, [zoom, pan])
+  }, [])
 
   function handleResetView() {
     setZoom(100)
@@ -632,8 +623,7 @@ function ActionsTab({
   onInit,
   onPlan,
   onApply,
-  onDestroy,
-  onState
+  onDestroy
 }: {
   project: TerraformProject
   cliOk: boolean
@@ -643,7 +633,6 @@ function ActionsTab({
   onPlan: () => void
   onApply: () => void
   onDestroy: () => void
-  onState: () => void
 }) {
   const [outputOpen, setOutputOpen] = useState(false)
   const s = project.lastPlanSummary
@@ -657,7 +646,6 @@ function ActionsTab({
           <button className="tf-action-btn plan" disabled={!cliOk || running} onClick={onPlan}>Plan</button>
           <button className="tf-action-btn apply" disabled={!cliOk || running} onClick={onApply}>Apply</button>
           <button className="tf-action-btn destroy" disabled={!cliOk || running} onClick={onDestroy}>Destroy</button>
-          <button className="tf-action-btn state" disabled={!cliOk || running} onClick={onState}>State</button>
         </div>
       </div>
       {(s.create > 0 || s.update > 0 || s.delete > 0 || s.replace > 0) && (
@@ -810,29 +798,36 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
     })
   }, [])
 
+  // Reset state when profile changes
+  useEffect(() => {
+    setSelectedId('')
+    setDetail(null)
+    setProjectsList([])
+  }, [connection.profile])
+
   // Load projects
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const list = await listProjects()
+      const list = await listProjects(connection.profile)
       setProjectsList(list)
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [connection.profile])
 
   useEffect(() => { void reload() }, [reload])
 
   // Load detail when selected
   useEffect(() => {
     if (!selectedId) { setDetail(null); return }
-    void getProject(selectedId).then((p) => {
+    void getProject(connection.profile, selectedId).then((p) => {
       setDetail(p)
-      void setSelectedProjectId(selectedId)
+      void setSelectedProjectId(connection.profile, selectedId)
     }).catch(() => setDetail(null))
-  }, [selectedId])
+  }, [selectedId, connection.profile])
 
   // Subscribe to terraform events
   useEffect(() => {
@@ -882,7 +877,7 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
     const dir = await chooseProjectDirectory()
     if (!dir) return
     try {
-      const project = await addProject(dir)
+      const project = await addProject(connection.profile, dir)
       await reload()
       setSelectedId(project.id)
       setMsg('')
@@ -894,7 +889,7 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
   async function handleRemoveProject() {
     if (!selectedId) return
     try {
-      await removeProject(selectedId)
+      await removeProject(connection.profile, selectedId)
       setSelectedId('')
       setDetail(null)
       await reload()
@@ -906,7 +901,7 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
   async function handleReload() {
     if (!selectedId) { await reload(); return }
     try {
-      const p = await reloadProject(selectedId)
+      const p = await reloadProject(connection.profile, selectedId)
       setDetail(p)
       await reload()
     } catch (err) {
@@ -923,7 +918,7 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
   async function handleSaveInputs(variables: Record<string, unknown>, varFile: string) {
     if (!detail) return
     try {
-      const updated = await updateInputs(detail.id, variables, varFile)
+      const updated = await updateInputs(connection.profile, detail.id, variables, varFile)
       setDetail(updated)
       setShowInputs(false)
       setPrefillMissing([])
@@ -933,16 +928,22 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
     }
   }
 
-  async function execCommand(command: 'init' | 'plan' | 'apply' | 'destroy' | 'state-pull'): Promise<TerraformCommandLog | null> {
+  async function execCommand(command: 'init' | 'plan' | 'apply' | 'destroy'): Promise<TerraformCommandLog | null> {
     if (!detail || running) return null
     setMsg('')
     try {
-      const log = await runCommand({ projectId: detail.id, command })
+      const log = await runCommand({ profileName: connection.profile, projectId: detail.id, command })
       // Handle missing vars
       if (!log.success && log.output) {
         const { missing, invalid } = await detectMissingVars(log.output)
-        if (missing.length > 0 || invalid.length > 0) {
-          setPrefillMissing([...missing, ...invalid])
+        const unresolved = uniqueStrings([...missing, ...invalid])
+        if (unresolved.length > 0) {
+          setPrefillMissing(unresolved)
+          setMsg(
+            unresolved.length === 1
+              ? `Missing required Terraform variable: ${unresolved[0]}. The Inputs dialog is open so you can provide it.`
+              : `Missing required Terraform variables: ${unresolved.join(', ')}. The Inputs dialog is open so you can provide them.`
+          )
           setShowInputs(true)
           return log
         }
@@ -972,7 +973,7 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
           setMsg('Plan failed. Review Command Output and fix the Terraform error before applying.')
           return
         }
-        void getProject(detail.id).then((p) => {
+        void getProject(connection.profile, detail.id).then((p) => {
           setDetail(p)
           const fallbackSummary = parsePlanSummaryFromOutput(planLog.output)
           const summary = (
@@ -1060,8 +1061,6 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
       }
     })
   }
-
-  function handleState() { void execCommand('state-pull') }
 
   return (
     <div className="tf-console">
@@ -1151,13 +1150,12 @@ export function TerraformConsole({ connection }: { connection: AwsConnection }) 
                   project={detail}
                   cliOk={cliOk}
                   running={running}
-                  lastLog={lastLog}
-                  onInit={handleInit}
-                  onPlan={handlePlan}
-                  onApply={handleApply}
-                  onDestroy={handleDestroy}
-                  onState={handleState}
-                />
+                lastLog={lastLog}
+                onInit={handleInit}
+                onPlan={handlePlan}
+                onApply={handleApply}
+                onDestroy={handleDestroy}
+              />
               )}
               {detailTab === 'resources' && <ResourcesTab project={detail} />}
             </>

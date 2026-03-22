@@ -49,11 +49,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('services:list', async () => wrap(() => SERVICE_CATALOG))
   ipcMain.handle('terraform:cli:detect', async () => wrap(() => detectTerraformCli()))
   ipcMain.handle('terraform:cli:info', async () => wrap(() => getCachedCliInfo()))
-  ipcMain.handle('terraform:projects:list', async () => wrap(() => listProjectSummaries()))
-  ipcMain.handle('terraform:projects:get', async (_event, projectId: string) => wrap(() => getProject(projectId)))
-  ipcMain.handle('terraform:projects:selected:get', async () => wrap(() => getSelectedProjectId()))
-  ipcMain.handle('terraform:projects:selected:set', async (_event, projectId: string) =>
-    wrap(() => setSelectedProjectId(projectId))
+  ipcMain.handle('terraform:projects:list', async (_event, profileName: string) => wrap(() => listProjectSummaries(profileName)))
+  ipcMain.handle('terraform:projects:get', async (_event, profileName: string, projectId: string) => wrap(() => getProject(profileName, projectId)))
+  ipcMain.handle('terraform:projects:selected:get', async (_event, profileName: string) => wrap(() => getSelectedProjectId(profileName)))
+  ipcMain.handle('terraform:projects:selected:set', async (_event, profileName: string, projectId: string) =>
+    wrap(() => setSelectedProjectId(profileName, projectId))
   )
   ipcMain.handle('terraform:projects:choose-directory', async () =>
     wrap(async () => {
@@ -73,14 +73,14 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return result.canceled ? '' : result.filePaths[0] ?? ''
     })
   )
-  ipcMain.handle('terraform:projects:add', async (_event, rootPath: string) => wrap(() => addProject(rootPath)))
-  ipcMain.handle('terraform:projects:rename', async (_event, projectId: string, name: string) =>
-    wrap(() => renameProject(projectId, name))
+  ipcMain.handle('terraform:projects:add', async (_event, profileName: string, rootPath: string) => wrap(() => addProject(profileName, rootPath)))
+  ipcMain.handle('terraform:projects:rename', async (_event, profileName: string, projectId: string, name: string) =>
+    wrap(() => renameProject(profileName, projectId, name))
   )
-  ipcMain.handle('terraform:projects:remove', async (_event, projectId: string) => wrap(() => removeProject(projectId)))
-  ipcMain.handle('terraform:projects:reload', async (_event, projectId: string) => wrap(() => getProject(projectId)))
-  ipcMain.handle('terraform:inputs:update', async (_event, projectId: string, inputs: Record<string, unknown>, varFile?: string) =>
-    wrap(() => updateProjectInputs(projectId, inputs, varFile))
+  ipcMain.handle('terraform:projects:remove', async (_event, profileName: string, projectId: string) => wrap(() => removeProject(profileName, projectId)))
+  ipcMain.handle('terraform:projects:reload', async (_event, profileName: string, projectId: string) => wrap(() => getProject(profileName, projectId)))
+  ipcMain.handle('terraform:inputs:update', async (_event, profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) =>
+    wrap(() => updateProjectInputs(profileName, projectId, inputs, varFile))
   )
   ipcMain.handle('terraform:logs:list', async (_event, projectId: string) => wrap(() => getCommandLogs(projectId)))
   ipcMain.handle('terraform:command:run', async (_event, request: TerraformCommandRequest) =>

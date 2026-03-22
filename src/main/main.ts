@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { app, BrowserWindow, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeImage } from 'electron'
 
 import { registerAwsIpcHandlers } from './awsIpc'
 import { registerEc2IpcHandlers } from './ec2Ipc'
@@ -15,9 +15,25 @@ import { registerServiceIpcHandlers } from './serviceIpc'
 import { registerSgIpcHandlers } from './sgIpc'
 import { registerTerminalIpcHandlers } from './terminalIpc'
 import { registerVpcIpcHandlers } from './vpcIpc'
+import { hasActiveTerraformApplyOrDestroy } from './terraform'
 
 let mainWindow: BrowserWindow | null = null
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+function showTerraformCloseWarning(owner?: BrowserWindow): number {
+  const options = {
+    type: 'warning' as const,
+    buttons: ['Cancel', 'Close App'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: 'Terraform operation in progress',
+    message: 'Terraform apply or destroy is still running.',
+    detail: 'Closing the app now can interrupt the operation and leave infrastructure in a partially changed state.'
+  }
+
+  return owner ? dialog.showMessageBoxSync(owner, options) : dialog.showMessageBoxSync(options)
+}
 
 /* ── Graceful shutdown: track in-flight IPC requests ─────── */
 const pendingRequests = new Set<Promise<unknown>>()
@@ -89,6 +105,21 @@ function createWindow(): void {
   } else {
     void mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+
+  mainWindow.on('close', (event) => {
+    if (isQuitting || !hasActiveTerraformApplyOrDestroy()) {
+      return
+    }
+
+    const choice = showTerraformCloseWarning(mainWindow ?? undefined)
+
+    if (choice === 0) {
+      event.preventDefault()
+      return
+    }
+
+    isQuitting = true
+  })
 }
 
 app.whenReady().then(() => {
@@ -120,6 +151,18 @@ app.on('window-all-closed', () => {
 
 let isQuitting = false
 app.on('before-quit', (e) => {
+  if (!isQuitting && hasActiveTerraformApplyOrDestroy()) {
+    const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+    const choice = showTerraformCloseWarning(owner)
+
+    if (choice === 0) {
+      e.preventDefault()
+      return
+    }
+
+    isQuitting = true
+  }
+
   if (isQuitting || pendingRequests.size === 0) return
   isQuitting = true
   e.preventDefault()
