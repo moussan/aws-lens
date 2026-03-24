@@ -149,6 +149,7 @@ jobs:
             exit 1
           fi
           echo "installer_path=${files[0]}" >> "$GITHUB_OUTPUT"
+          echo "installer_name=$(basename "${files[0]}")" >> "$GITHUB_OUTPUT"
 
       - name: Normalize Windows installer filename
         id: normalize-installer
@@ -177,6 +178,17 @@ jobs:
         shell: bash
         run: |
           find release-signed -maxdepth 2 -type f || true
+
+      - name: Restore signed installer filename
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(release-signed/*.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No signed Windows installer found in release-signed/" >&2
+            exit 1
+          fi
+          mv "${files[0]}" "release-signed/${{ steps.locate-installer.outputs.installer_name }}"
 
       - name: Upload signed Windows installer
         uses: actions/upload-artifact@v4
@@ -212,21 +224,21 @@ jobs:
           shopt -s globstar nullglob
           case "${{ github.event.inputs.target_platform }}" in
             windows)
-              files=(dist-artifacts/**/*.exe)
+              files=(dist-artifacts/windows-installers/**/*.exe)
               ;;
             mac)
-              files=(dist-artifacts/**/*.dmg dist-artifacts/**/*.zip)
+              files=(dist-artifacts/macos-installers/**/*.dmg dist-artifacts/macos-installers/**/*.zip)
               ;;
             linux)
-              files=(dist-artifacts/**/*.deb dist-artifacts/**/*.AppImage)
+              files=(dist-artifacts/linux-installers/**/*.deb dist-artifacts/linux-installers/**/*.AppImage)
               ;;
             all)
               files=(
-                dist-artifacts/**/*.exe
-                dist-artifacts/**/*.dmg
-                dist-artifacts/**/*.zip
-                dist-artifacts/**/*.deb
-                dist-artifacts/**/*.AppImage
+                dist-artifacts/windows-installers/**/*.exe
+                dist-artifacts/macos-installers/**/*.dmg
+                dist-artifacts/macos-installers/**/*.zip
+                dist-artifacts/linux-installers/**/*.deb
+                dist-artifacts/linux-installers/**/*.AppImage
               )
               ;;
           esac
@@ -243,13 +255,13 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            ${{ github.event.inputs.target_platform == 'windows' && 'dist-artifacts/**/*.exe' || '' }}
-            ${{ github.event.inputs.target_platform == 'mac' && 'dist-artifacts/**/*.dmg' || '' }}
-            ${{ github.event.inputs.target_platform == 'mac' && 'dist-artifacts/**/*.zip' || '' }}
-            ${{ github.event.inputs.target_platform == 'linux' && 'dist-artifacts/**/*.deb' || '' }}
-            ${{ github.event.inputs.target_platform == 'linux' && 'dist-artifacts/**/*.AppImage' || '' }}
-            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/**/*.exe' || '' }}
-            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/**/*.dmg' || '' }}
-            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/**/*.zip' || '' }}
-            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/**/*.deb' || '' }}
-            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/**/*.AppImage' || '' }}
+            ${{ github.event.inputs.target_platform == 'windows' && 'dist-artifacts/windows-installers/**/*.exe' || '' }}
+            ${{ github.event.inputs.target_platform == 'mac' && 'dist-artifacts/macos-installers/**/*.dmg' || '' }}
+            ${{ github.event.inputs.target_platform == 'mac' && 'dist-artifacts/macos-installers/**/*.zip' || '' }}
+            ${{ github.event.inputs.target_platform == 'linux' && 'dist-artifacts/linux-installers/**/*.deb' || '' }}
+            ${{ github.event.inputs.target_platform == 'linux' && 'dist-artifacts/linux-installers/**/*.AppImage' || '' }}
+            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/windows-installers/**/*.exe' || '' }}
+            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/macos-installers/**/*.dmg' || '' }}
+            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/macos-installers/**/*.zip' || '' }}
+            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/linux-installers/**/*.deb' || '' }}
+            ${{ github.event.inputs.target_platform == 'all' && 'dist-artifacts/linux-installers/**/*.AppImage' || '' }}
