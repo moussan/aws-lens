@@ -138,6 +138,18 @@ jobs:
           name: windows-installers-unsigned
           path: unsigned-windows
 
+      - name: Locate unsigned Windows installer
+        id: locate-installer
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(unsigned-windows/*.exe)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No unsigned Windows installer found in unsigned-windows/" >&2
+            exit 1
+          fi
+          echo "installer_path=${files[0]}" >> "$GITHUB_OUTPUT"
+
       - name: Prepare signed output directory
         shell: bash
         run: mkdir -p release-signed
@@ -150,14 +162,19 @@ jobs:
           password: ${{ secrets.ES_PASSWORD }}
           credential_id: ${{ secrets.CREDENTIAL_ID }}
           totp_secret: ${{ secrets.ES_TOTP_SECRET }}
-          file_path: ${{ github.workspace }}/unsigned-windows/*.exe
+          file_path: ${{ github.workspace }}/${{ steps.locate-installer.outputs.installer_path }}
           output_path: ${{ github.workspace }}/release-signed
+
+      - name: Inspect signed output
+        shell: bash
+        run: |
+          find release-signed -maxdepth 2 -type f || true
 
       - name: Upload signed Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: windows-installers
-          path: release-signed/*.exe
+          path: release-signed/**/*.exe
           if-no-files-found: error
 
   publish:
