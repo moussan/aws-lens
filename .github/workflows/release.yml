@@ -185,7 +185,7 @@ jobs:
         shell: pwsh
         run: |
           pnpm build
-          npx electron-builder --win nsis --publish never "--config.win.certificateSha1=$env:WINDOWS_CERT_SHA1"
+          npx electron-builder --win nsis --publish never "--config.win.signtoolOptions.certificateSha1=$env:WINDOWS_CERT_SHA1"
 
       - name: Build non-Windows installers
         if: matrix.os != 'windows-latest'
