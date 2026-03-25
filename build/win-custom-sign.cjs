@@ -31,7 +31,7 @@ exports.default = async function signWithSslCom(configuration) {
     args.push(`-credential_id=${credentialId}`)
   }
 
-  const result = spawnSync(toolPath, args, {
+  const result = spawnSync('cmd.exe', ['/c', toolPath, ...args], {
     stdio: 'inherit',
     shell: false
   })
