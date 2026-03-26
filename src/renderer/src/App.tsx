@@ -287,7 +287,7 @@ export function App() {
     return [...grouped.entries()].map(([category, items]) => [
       category,
       items
-        .filter((service) => service.id !== 'overview')
+        .filter((service) => service.id !== 'overview' && service.id !== 'session-hub')
         .sort((a, b) => a.label.localeCompare(b.label))
     ] as const)
   }, [services])
@@ -301,6 +301,7 @@ export function App() {
   const sidebarProfileLabel = connectionState.selectedProfile?.name || connectionState.profile || ''
   const profileBadge = getProfileBadge(sidebarProfileLabel)
   const overviewService = services.find((service) => service.id === 'overview')
+  const sessionHubService = services.find((service) => service.id === 'session-hub')
   const activityLabel = awsActivity.pendingCount > 0
     ? `Fetching ${awsActivity.pendingCount} AWS request${awsActivity.pendingCount === 1 ? '' : 's'}`
     : connectionState.connection
@@ -635,6 +636,16 @@ export function App() {
                 onClick={() => setScreen('overview')}
               >
                 <span>{overviewService.label} ({connectionState.region})</span>
+              </button>
+            )}
+            {sessionHubService && (
+              <button
+                type="button"
+                className={`service-link overview-link ${screen === 'session-hub' ? 'active' : ''}`}
+                disabled={!connectionState.connected}
+                onClick={() => setScreen('session-hub')}
+              >
+                <span>{sessionHubService.label}</span>
               </button>
             )}
             {groupedServices.map(([category, items]) => (
