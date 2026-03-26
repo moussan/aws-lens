@@ -1,4 +1,9 @@
-import { dialog, ipcMain, shell, type BrowserWindow, type OpenDialogOptions } from 'electron'
+import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import { promisify } from 'node:util'
+import { dialog, ipcMain, shell, app, type BrowserWindow, type OpenDialogOptions } from 'electron'
 
 import type { AwsConnection, TerraformCommandRequest } from '@shared/types'
 import { importAwsConfigFile } from './aws/profiles'
@@ -38,6 +43,7 @@ import {
 } from './aws/iam'
 
 type HandlerResult<T> = { ok: true; data: T } | { ok: false; error: string }
+const execFileAsync = promisify(execFile)
 
 async function wrap<T>(fn: () => Promise<T> | T): Promise<HandlerResult<T>> {
   try {
@@ -45,6 +51,33 @@ async function wrap<T>(fn: () => Promise<T> | T): Promise<HandlerResult<T>> {
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
+}
+
+async function lockDownPrivateKey(filePath: string): Promise<void> {
+  if (process.platform === 'win32') {
+    const username = process.env.USERNAME
+    if (!username) {
+      throw new Error('Unable to determine the current Windows user for SSH key permissions.')
+    }
+
+    await execFileAsync('icacls', [filePath, '/inheritance:r'])
+    await execFileAsync('icacls', [filePath, '/grant:r', `${username}:R`])
+    return
+  }
+
+  await fs.chmod(filePath, 0o600)
+}
+
+async function stageSshPrivateKey(sourcePath: string): Promise<string> {
+  const extension = path.extname(sourcePath) || '.pem'
+  const targetDir = path.join(app.getPath('temp'), 'aws-lens', 'ssh-keys')
+  const targetPath = path.join(targetDir, `${randomUUID()}${extension}`)
+
+  await fs.mkdir(targetDir, { recursive: true })
+  await fs.copyFile(sourcePath, targetPath)
+  await lockDownPrivateKey(targetPath)
+
+  return targetPath
 }
 
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
@@ -89,7 +122,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       const result = owner
         ? await dialog.showOpenDialog(owner, dialogOptions)
         : await dialog.showOpenDialog(dialogOptions)
-      return result.canceled ? '' : result.filePaths[0] ?? ''
+      if (result.canceled || !result.filePaths[0]) {
+        return ''
+      }
+
+      return stageSshPrivateKey(result.filePaths[0])
     })
   )
   ipcMain.handle('terraform:projects:add', async (_event, profileName: string, rootPath: string) => wrap(() => addProject(profileName, rootPath)))

@@ -50,9 +50,11 @@ import { ConfirmButton } from './ConfirmButton'
 type MainTab = 'instances' | 'snapshots'
 type SideTab = 'overview' | 'timeline'
 type ColumnKey = 'name' | 'instanceId' | 'type' | 'state' | 'az' | 'publicIp' | 'privateIp'
-type BastionLaunchStage = 'preparing' | 'launching' | 'refreshing' | 'completed' | 'failed'
-type BastionLaunchStatus = {
-  stage: BastionLaunchStage
+type BastionWorkflowMode = 'create' | 'destroy'
+type BastionWorkflowStage = 'preparing' | 'executing' | 'refreshing' | 'completed' | 'failed'
+type BastionWorkflowStatus = {
+  mode: BastionWorkflowMode
+  stage: BastionWorkflowStage
   targetInstanceId: string
   targetName: string
   imageId: string
@@ -63,6 +65,9 @@ type BastionLaunchStatus = {
   bastionId?: string
   error?: string
 }
+
+const BASTION_PURPOSE_TAG = 'aws-lens:purpose'
+const BASTION_TARGET_INSTANCE_TAG = 'aws-lens:bastion-target-instance-id'
 
 const COLUMNS: { key: ColumnKey; label: string; color: string }[] = [
   { key: 'name', label: 'Name', color: '#3b82f6' },
@@ -104,6 +109,10 @@ function quoteSshArg(value: string): string {
   return `'${value.replace(/'/g, "''")}'`
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function KV({ items }: { items: Array<[string, string]> }) {
   return (
     <div className="ec2-kv">
@@ -117,10 +126,10 @@ function KV({ items }: { items: Array<[string, string]> }) {
   )
 }
 
-function bastionStepState(current: BastionLaunchStage, step: 'preparing' | 'launching' | 'refreshing'): 'pending' | 'active' | 'completed' | 'failed' {
-  const order: Record<'preparing' | 'launching' | 'refreshing', number> = {
+function bastionStepState(current: BastionWorkflowStage, step: 'preparing' | 'executing' | 'refreshing'): 'pending' | 'active' | 'completed' | 'failed' {
+  const order: Record<'preparing' | 'executing' | 'refreshing', number> = {
     preparing: 0,
-    launching: 1,
+    executing: 1,
     refreshing: 2
   }
 
@@ -141,6 +150,60 @@ function bastionStepState(current: BastionLaunchStage, step: 'preparing' | 'laun
   }
 
   return 'pending'
+}
+
+async function waitForBastionReady(
+  connection: AwsConnection,
+  targetInstanceId: string,
+  bastionId: string,
+  timeoutMs = 120000
+): Promise<void> {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const [instances, connections] = await Promise.all([
+      listEc2Instances(connection),
+      findBastionConnectionsForInstance(connection, targetInstanceId)
+    ])
+
+    const bastion = instances.find((instance) => instance.instanceId === bastionId)
+    const linked = connections.some((entry) => entry.bastionInstanceIds.includes(bastionId))
+
+    if (bastion?.state === 'running' && linked) {
+      return
+    }
+
+    await sleep(3000)
+  }
+
+  throw new Error(`Timed out waiting for bastion ${bastionId} to become ready.`)
+}
+
+async function waitForBastionRemoval(
+  connection: AwsConnection,
+  targetInstanceId: string,
+  bastionId: string,
+  timeoutMs = 120000
+): Promise<void> {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const [bastions, connections] = await Promise.all([
+      listBastions(connection),
+      findBastionConnectionsForInstance(connection, targetInstanceId).catch(() => [] as BastionConnectionInfo[])
+    ])
+
+    const stillExists = bastions.some((instance) => instance.instanceId === bastionId)
+    const stillLinked = connections.some((entry) => entry.bastionInstanceIds.includes(bastionId))
+
+    if (!stillExists && !stillLinked) {
+      return
+    }
+
+    await sleep(3000)
+  }
+
+  throw new Error(`Timed out waiting for bastion ${bastionId} to be removed.`)
 }
 
 export function Ec2Console({
@@ -211,7 +274,7 @@ export function Ec2Console({
   const [bastionSubnets, setBastionSubnets] = useState<SubnetSummary[]>([])
   const [bastionSecurityGroups, setBastionSecurityGroups] = useState<SecurityGroupSummary[]>([])
   const [loadingBastionNetworkOptions, setLoadingBastionNetworkOptions] = useState(false)
-  const [bastionLaunchStatus, setBastionLaunchStatus] = useState<BastionLaunchStatus | null>(null)
+  const [bastionLaunchStatus, setBastionLaunchStatus] = useState<BastionWorkflowStatus | null>(null)
 
   /* ── Timeline state ────────────────────────────────────── */
   const [timelineEvents, setTimelineEvents] = useState<CloudTrailEventSummary[]>([])
@@ -299,6 +362,10 @@ export function Ec2Console({
   async function selectInstance(id: string) {
     setSelectedId(id)
     setMsg('')
+    setDetail(null)
+    setIamAssoc(null)
+    setVpcDetail(null)
+    setLinkedBastions([])
     const d = await describeEc2Instance(connection, id)
     setDetail(d)
     if (d) {
@@ -394,9 +461,11 @@ export function Ec2Console({
 
   async function doLaunchBastion() {
     if (!detail || !bastionAmi || !bastionSubnet || !bastionKeyPair) return
-    const statusBase: BastionLaunchStatus = {
+    const targetInstanceId = detail.instanceId
+    const statusBase: BastionWorkflowStatus = {
+      mode: 'create',
       stage: 'preparing',
-      targetInstanceId: detail.instanceId,
+      targetInstanceId,
       targetName: detail.name,
       imageId: bastionAmi,
       instanceType: bastionType,
@@ -406,22 +475,19 @@ export function Ec2Console({
     }
     setBastionLaunchStatus(statusBase)
     try {
-      setBastionLaunchStatus({ ...statusBase, stage: 'launching' })
+      setBastionLaunchStatus({ ...statusBase, stage: 'executing' })
       const id = await launchBastion(connection, {
         imageId: bastionAmi,
         instanceType: bastionType,
         subnetId: bastionSubnet,
         keyName: bastionKeyPair,
         securityGroupIds: bastionSg ? [bastionSg] : [],
-        targetInstanceId: detail.instanceId
+        targetInstanceId
       })
       setBastionLaunchStatus({ ...statusBase, stage: 'refreshing', bastionId: id })
-      const [nextBastions, nextLinkedBastions] = await Promise.all([
-        listBastions(connection),
-        findBastionConnectionsForInstance(connection, detail.instanceId)
-      ])
-      setBastions(nextBastions)
-      setLinkedBastions(nextLinkedBastions)
+      await waitForBastionReady(connection, targetInstanceId, id)
+      await reload()
+      await selectInstance(targetInstanceId)
       setShowBastionPanel(false)
       setMsg(`Bastion ${id} launched`)
       setBastionLaunchStatus({ ...statusBase, stage: 'completed', bastionId: id })
@@ -434,15 +500,37 @@ export function Ec2Console({
 
   async function doDeleteBastion() {
     if (!detail) return
-    await deleteBastion(connection, detail.instanceId)
-    setMsg(
-      linkedBastions.length > 0
-        ? `Deleted ${linkedBastions.length} bastion connection${linkedBastions.length === 1 ? '' : 's'}`
-        : 'Deleted bastion linkage'
-    )
-    setLinkedBastions([])
-    setBastions(await listBastions(connection))
-    await selectInstance(detail.instanceId)
+    const targetInstanceId = detail.tags[BASTION_TARGET_INSTANCE_TAG] || detail.instanceId
+    const statusBase: BastionWorkflowStatus = {
+      mode: 'destroy',
+      stage: 'preparing',
+      targetInstanceId,
+      targetName: detail.name,
+      imageId: detail.imageId,
+      instanceType: detail.type,
+      subnetId: detail.subnetId,
+      keyName: detail.keyName,
+      securityGroupId: detail.securityGroups[0]?.id ?? '',
+      bastionId: detail.instanceId
+    }
+    setBastionLaunchStatus(statusBase)
+    try {
+      setBastionLaunchStatus({ ...statusBase, stage: 'executing' })
+      await deleteBastion(connection, targetInstanceId)
+      setBastionLaunchStatus({ ...statusBase, stage: 'refreshing' })
+      if (statusBase.bastionId) {
+        await waitForBastionRemoval(connection, targetInstanceId, statusBase.bastionId)
+      }
+      setLinkedBastions([])
+      await reload()
+      await selectInstance(targetInstanceId)
+      setMsg('Deleted bastion')
+      setBastionLaunchStatus({ ...statusBase, stage: 'completed' })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setMsg(message)
+      setBastionLaunchStatus({ ...statusBase, stage: 'failed', error: message })
+    }
   }
 
   async function loadPopularAmis(): Promise<void> {
@@ -578,8 +666,11 @@ export function Ec2Console({
   const activeCols = COLUMNS.filter(c => visibleCols.has(c.key))
 
   /* ── Derived data ────────────────────────────────────────── */
+  const selectedInstance = instances.find((instance) => instance.instanceId === selectedId) ?? null
+  const isTerminatedInstance = selectedInstance?.state === 'terminated'
   const selectedSnap = snapshots.find((s) => s.snapshotId === selectedSnapId) ?? null
   const hasManagedBastionTag = Object.keys(detail?.tags ?? {}).some((key) => key.startsWith('aws-lens-bastion#'))
+  const isSelectedBastion = bastions.some((instance) => instance.instanceId === selectedId)
   const bastionLaunchBusy = bastionLaunchStatus !== null && !['completed', 'failed'].includes(bastionLaunchStatus.stage)
 
   const ssmCmd = detail
@@ -739,18 +830,18 @@ export function Ec2Console({
                     <h3>Actions</h3>
                     <div className="ec2-actions-grid">
                       <button className="ec2-action-btn" type="button" onClick={() => void doDescribe()}>Describe</button>
-                      <button className="ec2-action-btn start" type="button" onClick={() => void doAction('start')}>Start</button>
-                      <ConfirmButton className="ec2-action-btn stop" type="button" onConfirm={() => void doAction('stop')}>Stop</ConfirmButton>
-                      <ConfirmButton className="ec2-action-btn" type="button" onConfirm={() => void doAction('reboot')}>Reboot</ConfirmButton>
-                      <button className="ec2-action-btn resize" type="button" onClick={() => setShowResize(!showResize)}>Resize</button>
-                      <button className="ec2-action-btn" type="button" onClick={() => {
+                      {!isTerminatedInstance && <button className="ec2-action-btn start" type="button" onClick={() => void doAction('start')}>Start</button>}
+                      {!isTerminatedInstance && <ConfirmButton className="ec2-action-btn stop" type="button" onConfirm={() => void doAction('stop')}>Stop</ConfirmButton>}
+                      {!isTerminatedInstance && <ConfirmButton className="ec2-action-btn" type="button" onConfirm={() => void doAction('reboot')}>Reboot</ConfirmButton>}
+                      {!isTerminatedInstance && <button className="ec2-action-btn resize" type="button" onClick={() => setShowResize(!showResize)}>Resize</button>}
+                      {!isTerminatedInstance && <button className="ec2-action-btn" type="button" onClick={() => {
                         if (detail?.volumes[0]) setSnapVolume(detail.volumes[0].volumeId)
                         setMainTab('snapshots')
-                      }}>Create Snapshot</button>
-                      <button className="ec2-action-btn" type="button" onClick={() => {
+                      }}>Create Snapshot</button>}
+                      {!isTerminatedInstance && <button className="ec2-action-btn" type="button" onClick={() => {
                         openBastionPanel()
-                      }}>Create Bastion</button>
-                      {(linkedBastions.length > 0 || hasManagedBastionTag) && (
+                      }}>Create Bastion</button>}
+                      {isSelectedBastion && (
                         <ConfirmButton className="ec2-action-btn remove" type="button" onConfirm={() => void doDeleteBastion()}>
                           Delete Bastion
                         </ConfirmButton>
@@ -779,7 +870,7 @@ export function Ec2Console({
                   )}
 
                   {/* Resize (expandable) */}
-                  {showResize && detail && (
+                  {!isTerminatedInstance && showResize && detail && (
                     <div className="ec2-sidebar-section">
                       <h3>Resize Instance</h3>
                       <div className="ec2-sidebar-hint">Instance must be stopped before resize.</div>
@@ -1105,7 +1196,7 @@ export function Ec2Console({
             <div className="ec2-status-header">
               <div>
                 <div className="ec2-status-eyebrow">Bastion Workflow</div>
-                <h3 id="bastion-status-title">Create Bastion</h3>
+                <h3 id="bastion-status-title">{bastionLaunchStatus.mode === 'create' ? 'Create Bastion' : 'Destroy Bastion'}</h3>
               </div>
               <span className={`ec2-badge ${bastionLaunchStatus.stage === 'completed' ? 'completed' : bastionLaunchStatus.stage === 'failed' ? 'stopped' : 'pending'}`}>
                 {bastionLaunchStatus.stage === 'completed'
@@ -1117,15 +1208,25 @@ export function Ec2Console({
             </div>
 
             <div className="ec2-status-copy">
-              {bastionLaunchStatus.stage === 'completed' && `Bastion ${bastionLaunchStatus.bastionId ?? ''} is ready for ${bastionLaunchStatus.targetInstanceId}.`}
-              {bastionLaunchStatus.stage === 'failed' && (bastionLaunchStatus.error ?? 'Bastion creation failed.')}
-              {bastionLaunchStatus.stage !== 'completed' && bastionLaunchStatus.stage !== 'failed' && `Launching managed bastion access for ${bastionLaunchStatus.targetInstanceId}.`}
+              {bastionLaunchStatus.stage === 'completed' && (
+                bastionLaunchStatus.mode === 'create'
+                  ? `Bastion ${bastionLaunchStatus.bastionId ?? ''} is ready for ${bastionLaunchStatus.targetInstanceId}.`
+                  : `Bastion access for ${bastionLaunchStatus.targetInstanceId} has been removed.`
+              )}
+              {bastionLaunchStatus.stage === 'failed' && (
+                bastionLaunchStatus.error ?? (bastionLaunchStatus.mode === 'create' ? 'Bastion creation failed.' : 'Bastion deletion failed.')
+              )}
+              {bastionLaunchStatus.stage !== 'completed' && bastionLaunchStatus.stage !== 'failed' && (
+                bastionLaunchStatus.mode === 'create'
+                  ? `Launching managed bastion access for ${bastionLaunchStatus.targetInstanceId}.`
+                  : `Removing managed bastion access for ${bastionLaunchStatus.targetInstanceId}.`
+              )}
             </div>
 
             <div className="ec2-status-steps">
               {([
                 ['preparing', 'Preparing request'],
-                ['launching', 'Launching bastion'],
+                ['executing', bastionLaunchStatus.mode === 'create' ? 'Launching bastion' : 'Deleting bastion'],
                 ['refreshing', 'Refreshing EC2 view']
               ] as const).map(([stepKey, stepLabel]) => {
                 const state = bastionStepState(bastionLaunchStatus.stage, stepKey)
@@ -1150,8 +1251,8 @@ export function Ec2Console({
 
             <div className="ec2-status-actions">
               {bastionLaunchStatus.stage === 'failed' && (
-                <button className="ec2-action-btn apply" type="button" onClick={() => void doLaunchBastion()}>
-                  Retry Launch
+                <button className="ec2-action-btn apply" type="button" onClick={() => void (bastionLaunchStatus.mode === 'create' ? doLaunchBastion() : doDeleteBastion())}>
+                  {bastionLaunchStatus.mode === 'create' ? 'Retry Launch' : 'Retry Delete'}
                 </button>
               )}
               <button className="ec2-action-btn" type="button" onClick={() => setBastionLaunchStatus(null)} disabled={bastionLaunchBusy}>

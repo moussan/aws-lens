@@ -305,6 +305,7 @@ export function App() {
   const selectedService = (services.find((service) => service.id === screen) ?? null) as ServiceDescriptor | null
   const activeCacheTag = screenCacheTag(screen)
   const activePageNonce = pageRefreshNonceByScreen[screen] ?? 0
+  const isCurrentScreenRefreshing = refreshState?.screen === screen
 
   useEffect(() => {
     return () => {
@@ -593,9 +594,9 @@ export function App() {
               type="button"
               className="sidebar-refresh-button"
               onClick={handlePageRefresh}
-              disabled={!activeCacheTag || !connectionState.connection || !connectionState.connected || awsActivity.pendingCount > 0}
+              disabled={!activeCacheTag || !connectionState.connection || !connectionState.connected || isCurrentScreenRefreshing}
             >
-              {awsActivity.pendingCount > 0 && activeCacheTag ? 'Refreshing...' : 'Refresh current page'}
+              {isCurrentScreenRefreshing ? 'Refreshing...' : 'Refresh current page'}
             </button>
           </div>
 
