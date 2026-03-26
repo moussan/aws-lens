@@ -1,6 +1,7 @@
 import { fromIni } from '@aws-sdk/credential-provider-ini'
 
 import type { AwsConnection } from '@shared/types'
+import { getSessionCredentials } from '../sessionHub'
 
 type AwsCredentialsProvider = ReturnType<typeof fromIni>
 
@@ -31,9 +32,21 @@ function getCredentialsProvider(profile: string): AwsCredentialsProvider {
 }
 
 export function awsClientConfig(connection: AwsConnection) {
+  const credentials = connection.kind === 'assumed-role'
+    ? (() => {
+        const snapshot = getSessionCredentials(connection.sessionId)
+        return {
+          accessKeyId: snapshot.accessKeyId,
+          secretAccessKey: snapshot.secretAccessKey,
+          sessionToken: snapshot.sessionToken,
+          expiration: new Date(snapshot.expiration)
+        }
+      })()
+    : getCredentialsProvider(connection.profile)
+
   return {
     region: connection.region,
-    credentials: getCredentialsProvider(connection.profile)
+    credentials
   }
 }
 

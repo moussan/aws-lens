@@ -620,7 +620,7 @@ export function IamConsole({ connection }: { connection: AwsConnection }) {
 
   useEffect(() => {
     void loadMainTab('users', connection)
-  }, [connection.profile, connection.region])
+}, [connection.sessionId, connection.region])
 
   function switchMainTab(tab: MainTab) {
     setMainTab(tab)

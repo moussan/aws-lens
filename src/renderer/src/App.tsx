@@ -28,6 +28,7 @@ import { SecretsManagerConsole } from './SecretsManagerConsole'
 import { SecurityGroupsConsole } from './SecurityGroupsConsole'
 import { SnsConsole } from './SnsConsole'
 import { SqsConsole } from './SqsConsole'
+import { SessionHub } from './SessionHub'
 import { StsConsole } from './StsConsole'
 import { TerraformConsole } from './TerraformConsole'
 import { VpcWorkspace } from './VpcWorkspace'
@@ -42,6 +43,7 @@ type FabMode = 'closed' | 'menu' | 'credentials'
 const SERVICE_DESCRIPTIONS: Record<ServiceId, string> = {
   terraform: 'Terraform project browser and command execution workspace.',
   overview: 'Regional summary landing page across AWS services.',
+  'session-hub': 'Saved assume-role targets, active temporary sessions, activation, expiration, and cross-account comparison.',
   'compliance-center': 'Operational and security findings workspace with grouped policy checks and guided remediation.',
   ec2: 'Instances, snapshots, IAM profiles, bastions, and instance actions.',
   cloudwatch: 'Metrics, logs, and recent service telemetry.',
@@ -73,6 +75,7 @@ const SERVICE_DESCRIPTIONS: Record<ServiceId, string> = {
 const IMPLEMENTED_SCREENS = new Set<ServiceId>([
   'terraform',
   'overview',
+  'session-hub',
   'compliance-center',
   'ec2',
   'cloudwatch',
@@ -222,6 +225,8 @@ function screenCacheTag(screen: Screen): CacheTag | null {
     case 'waf':
     case 'identity-center':
       return screen
+    case 'session-hub':
+      return null
     default:
       return null
   }
@@ -325,10 +330,10 @@ export function App() {
 
   // Redirect to profiles when connection fails (e.g. SSO session expired)
   useEffect(() => {
-    if (connectionState.error && !connectionState.connected && connectionState.profile) {
-      setScreen('profiles')
+    if (connectionState.error && !connectionState.connected && connectionState.connection) {
+      setScreen(connectionState.activeSession ? 'session-hub' : 'profiles')
     }
-  }, [connectionState.error, connectionState.connected, connectionState.profile])
+  }, [connectionState.activeSession, connectionState.connected, connectionState.connection, connectionState.error])
 
   useEffect(() => {
     setRefreshState((current) => {
@@ -475,6 +480,21 @@ export function App() {
       }} />
     }
 
+    if (targetScreen === 'session-hub') {
+      return (
+        <SessionHub
+          connectionState={connectionState}
+          onOpenTerminal={(connection) => {
+            setTerminalOpen(true)
+            setPendingTerminalCommand(null)
+            if (connection.kind === 'assumed-role') {
+              connectionState.activateSession(connection.sessionId)
+            }
+          }}
+        />
+      )
+    }
+
     if (targetScreen === 'compliance-center' && targetService?.id === 'compliance-center') {
       return (
         <ConnectedServiceScreen service={targetService} state={connectionState}>
@@ -576,8 +596,14 @@ export function App() {
             <div className="field">
               <span>Profile</span>
               <button type="button" className="selector-trigger sidebar-selector" onClick={() => setScreen('profiles')}>
-                <strong>{connectionState.selectedProfile?.name || 'No profile selected'}</strong>
-                <span>{connectionState.selectedProfile ? `${connectionState.selectedProfile.source} profile` : 'Click to select a profile'}</span>
+                <strong>{connectionState.connection?.label || connectionState.selectedProfile?.name || 'No profile selected'}</strong>
+                <span>
+                  {connectionState.activeSession
+                    ? `Assumed session via ${connectionState.activeSession.sourceProfile || connectionState.activeSession.profile}`
+                    : connectionState.selectedProfile
+                      ? `${connectionState.selectedProfile.source} profile`
+                      : 'Click to select a profile'}
+                </span>
               </button>
             </div>
             <label className="field">
@@ -868,7 +894,9 @@ export function App() {
           <strong>{activityLabel}</strong>
           <span>
             {connectionState.connection
-              ? `AWS_PROFILE=${connectionState.connection.profile} · AWS_REGION=${connectionState.connection.region}`
+              ? connectionState.connection.kind === 'profile'
+                ? `AWS_PROFILE=${connectionState.connection.profile} · AWS_REGION=${connectionState.connection.region}`
+                : `SESSION=${connectionState.connection.label} · AWS_REGION=${connectionState.connection.region}`
               : 'Select an AWS profile and region to enable CLI context.'}
           </span>
         </div>

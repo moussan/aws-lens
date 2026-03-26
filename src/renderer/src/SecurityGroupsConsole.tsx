@@ -174,7 +174,7 @@ export function SecurityGroupsConsole({ connection }: { connection: AwsConnectio
     finally { setLoading(false) }
   }
 
-  useEffect(() => { void reload() }, [connection.profile, connection.region])
+useEffect(() => { void reload() }, [connection.sessionId, connection.region])
 
   async function selectGroup(groupId: string) {
     setSelectedId(groupId); setMsg('')
