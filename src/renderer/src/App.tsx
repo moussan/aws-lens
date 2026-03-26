@@ -227,6 +227,21 @@ function screenCacheTag(screen: Screen): CacheTag | null {
   }
 }
 
+function refreshTagsForScreen(screen: Screen): CacheTag[] {
+  const primaryTag = screenCacheTag(screen)
+
+  if (!primaryTag) {
+    return []
+  }
+
+  switch (screen) {
+    case 'ec2':
+      return ['ec2', 'key-pairs', 'vpc', 'cloudtrail']
+    default:
+      return [primaryTag]
+  }
+}
+
 export function App() {
   const [screen, setScreen] = useState<Screen>('profiles')
   const [navOpen, setNavOpen] = useState(true)
@@ -290,6 +305,7 @@ export function App() {
   const selectedService = (services.find((service) => service.id === screen) ?? null) as ServiceDescriptor | null
   const activeCacheTag = screenCacheTag(screen)
   const activePageNonce = pageRefreshNonceByScreen[screen] ?? 0
+  const isCurrentScreenRefreshing = refreshState?.screen === screen
 
   useEffect(() => {
     return () => {
@@ -329,12 +345,16 @@ export function App() {
   }, [awsActivity.pendingCount])
 
   function handlePageRefresh(): void {
-    if (!activeCacheTag) {
+    const refreshTags = refreshTagsForScreen(screen)
+
+    if (refreshTags.length === 0) {
       return
     }
 
     setRefreshState({ screen, sawPending: false })
-    invalidatePageCache(activeCacheTag)
+    for (const tag of refreshTags) {
+      invalidatePageCache(tag)
+    }
     setPageRefreshNonceByScreen((current) => ({
       ...current,
       [screen]: (current[screen] ?? 0) + 1
@@ -574,9 +594,9 @@ export function App() {
               type="button"
               className="sidebar-refresh-button"
               onClick={handlePageRefresh}
-              disabled={!activeCacheTag || !connectionState.connection || !connectionState.connected || awsActivity.pendingCount > 0}
+              disabled={!activeCacheTag || !connectionState.connection || !connectionState.connected || isCurrentScreenRefreshing}
             >
-              {awsActivity.pendingCount > 0 && activeCacheTag ? 'Refreshing...' : 'Refresh current page'}
+              {isCurrentScreenRefreshing ? 'Refreshing...' : 'Refresh current page'}
             </button>
           </div>
 
