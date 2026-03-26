@@ -3,22 +3,22 @@ import { DescribeInstancesCommand, DescribeKeyPairsCommand, DescribeSecurityGrou
 import { ListFunctionsCommand, LambdaClient, ListTagsCommand as ListLambdaTagsCommand } from '@aws-sdk/client-lambda'
 import { DescribeClusterCommand, EKSClient, ListClustersCommand } from '@aws-sdk/client-eks'
 import { AutoScalingClient, DescribeAutoScalingGroupsCommand } from '@aws-sdk/client-auto-scaling'
-import { S3Client, ListBucketsCommand } from '@aws-sdk/client-s3'
-import { RDSClient, DescribeDBInstancesCommand } from '@aws-sdk/client-rds'
-import { CloudFormationClient, ListStacksCommand } from '@aws-sdk/client-cloudformation'
-import { ECRClient, DescribeRepositoriesCommand } from '@aws-sdk/client-ecr'
-import { ECSClient, ListClustersCommand as EcsListClustersCommand } from '@aws-sdk/client-ecs'
-import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand } from '@aws-sdk/client-elastic-load-balancing-v2'
-import { Route53Client, ListHostedZonesCommand } from '@aws-sdk/client-route-53'
+import { GetBucketTaggingCommand, S3Client, ListBucketsCommand } from '@aws-sdk/client-s3'
+import { RDSClient, DescribeDBInstancesCommand, ListTagsForResourceCommand as ListRdsTagsForResourceCommand } from '@aws-sdk/client-rds'
+import { CloudFormationClient, DescribeStacksCommand, ListStacksCommand } from '@aws-sdk/client-cloudformation'
+import { ECRClient, DescribeRepositoriesCommand, ListTagsForResourceCommand as ListEcrTagsForResourceCommand } from '@aws-sdk/client-ecr'
+import { DescribeClustersCommand as DescribeEcsClustersCommand, ECSClient, ListClustersCommand as EcsListClustersCommand } from '@aws-sdk/client-ecs'
+import { DescribeLoadBalancersCommand, DescribeTagsCommand as DescribeLoadBalancerTagsCommand, ElasticLoadBalancingV2Client } from '@aws-sdk/client-elastic-load-balancing-v2'
+import { ListHostedZonesCommand, ListTagsForResourcesCommand as ListRoute53TagsForResourcesCommand, Route53Client } from '@aws-sdk/client-route-53'
 import { ListTagsForResourceCommand, SNSClient, ListTopicsCommand } from '@aws-sdk/client-sns'
 import { ListQueueTagsCommand, SQSClient, ListQueuesCommand } from '@aws-sdk/client-sqs'
-import { ACMClient, ListCertificatesCommand } from '@aws-sdk/client-acm'
-import { KMSClient, ListKeysCommand } from '@aws-sdk/client-kms'
-import { WAFV2Client, ListWebACLsCommand } from '@aws-sdk/client-wafv2'
+import { ACMClient, ListCertificatesCommand, ListTagsForCertificateCommand } from '@aws-sdk/client-acm'
+import { DescribeKeyCommand, KMSClient, ListKeysCommand, ListResourceTagsCommand } from '@aws-sdk/client-kms'
+import { ListTagsForResourceCommand as ListWafTagsForResourceCommand, ListWebACLsCommand, WAFV2Client } from '@aws-sdk/client-wafv2'
 import { SecretsManagerClient, ListSecretsCommand } from '@aws-sdk/client-secrets-manager'
-import { CloudWatchClient, DescribeAlarmsCommand } from '@aws-sdk/client-cloudwatch'
-import { CloudTrailClient, DescribeTrailsCommand } from '@aws-sdk/client-cloudtrail'
-import { IAMClient, ListUsersCommand, ListRolesCommand } from '@aws-sdk/client-iam'
+import { CloudWatchClient, DescribeAlarmsCommand, ListTagsForResourceCommand as ListCloudWatchTagsForResourceCommand } from '@aws-sdk/client-cloudwatch'
+import { CloudTrailClient, DescribeTrailsCommand, ListTagsCommand as ListCloudTrailTagsCommand } from '@aws-sdk/client-cloudtrail'
+import { IAMClient, ListRolesCommand, ListRoleTagsCommand, ListUsersCommand, ListUserTagsCommand } from '@aws-sdk/client-iam'
 
 import { awsClientConfig, readTags } from './client'
 import type {
@@ -656,6 +656,469 @@ async function listTaggedKeyPairs(connection: AwsConnection): Promise<Array<{ id
       tags
     }
   })
+}
+
+async function listTaggedS3(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new S3Client(awsClientConfig(connection))
+  const output = await client.send(new ListBucketsCommand({}))
+  const buckets = output.Buckets ?? []
+
+  return mapWithConcurrency(buckets, 5, async (bucket) => {
+    const name = bucket.Name ?? '-'
+    let tags: Record<string, string> = {}
+
+    try {
+      const tagOutput = await client.send(new GetBucketTaggingCommand({ Bucket: name }))
+      for (const tag of tagOutput.TagSet ?? []) {
+        if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+      }
+    } catch {
+      tags = {}
+    }
+
+    return { id: name, name, tags }
+  })
+}
+
+async function listTaggedRds(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new RDSClient(awsClientConfig(connection))
+  const instances: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let marker: string | undefined
+
+  do {
+    const output = await client.send(new DescribeDBInstancesCommand({ Marker: marker }))
+    const pageItems = await mapWithConcurrency(output.DBInstances ?? [], 5, async (instance) => {
+      let tags: Record<string, string> = {}
+
+      try {
+        const tagOutput = await client.send(new ListRdsTagsForResourceCommand({ ResourceName: instance.DBInstanceArn ?? '' }))
+        tags = readTags(tagOutput.TagList)
+      } catch {
+        tags = {}
+      }
+
+      return {
+        id: instance.DBInstanceArn ?? instance.DBInstanceIdentifier ?? '-',
+        name: instance.DBInstanceIdentifier ?? '-',
+        tags
+      }
+    })
+
+    instances.push(...pageItems)
+    marker = output.Marker
+  } while (marker)
+
+  return instances
+}
+
+async function listTaggedCloudFormation(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new CloudFormationClient(awsClientConfig(connection))
+  const stacks: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let nextToken: string | undefined
+
+  do {
+    const output = await client.send(new DescribeStacksCommand({ NextToken: nextToken }))
+    for (const stack of output.Stacks ?? []) {
+      stacks.push({
+        id: stack.StackId ?? stack.StackName ?? '-',
+        name: stack.StackName ?? '-',
+        tags: readTags(stack.Tags)
+      })
+    }
+    nextToken = output.NextToken
+  } while (nextToken)
+
+  return stacks
+}
+
+async function listTaggedEcr(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new ECRClient(awsClientConfig(connection))
+  const repositories: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let nextToken: string | undefined
+
+  do {
+    const output = await client.send(new DescribeRepositoriesCommand({ nextToken }))
+    const pageItems = await mapWithConcurrency(output.repositories ?? [], 5, async (repository) => {
+      let tags: Record<string, string> = {}
+
+      try {
+        const tagOutput = await client.send(new ListEcrTagsForResourceCommand({ resourceArn: repository.repositoryArn ?? '' }))
+        for (const tag of tagOutput.tags ?? []) {
+          if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+        }
+      } catch {
+        tags = {}
+      }
+
+      return {
+        id: repository.repositoryArn ?? repository.repositoryName ?? '-',
+        name: repository.repositoryName ?? '-',
+        tags
+      }
+    })
+
+    repositories.push(...pageItems)
+    nextToken = output.nextToken
+  } while (nextToken)
+
+  return repositories
+}
+
+async function listTaggedEcs(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new ECSClient(awsClientConfig(connection))
+  const clusters: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let nextToken: string | undefined
+
+  do {
+    const output = await client.send(new EcsListClustersCommand({ nextToken }))
+    const clusterArns = output.clusterArns ?? []
+
+    for (let index = 0; index < clusterArns.length; index += 100) {
+      const batch = clusterArns.slice(index, index + 100)
+      if (batch.length === 0) continue
+
+      try {
+        const detail = await client.send(new DescribeEcsClustersCommand({ clusters: batch, include: ['TAGS'] }))
+        for (const cluster of detail.clusters ?? []) {
+          const tags: Record<string, string> = {}
+          for (const tag of cluster.tags ?? []) {
+            if (tag.key) tags[tag.key] = tag.value ?? ''
+          }
+          clusters.push({
+            id: cluster.clusterArn ?? cluster.clusterName ?? '-',
+            name: cluster.clusterName ?? cluster.clusterArn ?? '-',
+            tags
+          })
+        }
+      } catch {
+        for (const arn of batch) {
+          clusters.push({
+            id: arn,
+            name: arn.split('/').pop() ?? arn,
+            tags: {}
+          })
+        }
+      }
+    }
+
+    nextToken = output.nextToken
+  } while (nextToken)
+
+  return clusters
+}
+
+async function listTaggedLoadBalancers(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new ElasticLoadBalancingV2Client(awsClientConfig(connection))
+  const balancers: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let marker: string | undefined
+
+  do {
+    const output = await client.send(new DescribeLoadBalancersCommand({ Marker: marker }))
+    const pageBalancers = output.LoadBalancers ?? []
+
+    for (let index = 0; index < pageBalancers.length; index += 20) {
+      const batch = pageBalancers.slice(index, index + 20)
+      const arns = batch.map((item) => item.LoadBalancerArn).filter((value): value is string => Boolean(value))
+      const tagsByArn = new Map<string, Record<string, string>>()
+
+      if (arns.length > 0) {
+        try {
+          const tagOutput = await client.send(new DescribeLoadBalancerTagsCommand({ ResourceArns: arns }))
+          for (const description of tagOutput.TagDescriptions ?? []) {
+            const tags: Record<string, string> = {}
+            for (const tag of description.Tags ?? []) {
+              if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+            }
+            if (description.ResourceArn) {
+              tagsByArn.set(description.ResourceArn, tags)
+            }
+          }
+        } catch {
+          // ignore tag lookup failures
+        }
+      }
+
+      for (const balancer of batch) {
+        const arn = balancer.LoadBalancerArn ?? balancer.LoadBalancerName ?? '-'
+        balancers.push({
+          id: arn,
+          name: balancer.LoadBalancerName ?? arn,
+          tags: tagsByArn.get(arn) ?? {}
+        })
+      }
+    }
+
+    marker = output.NextMarker
+  } while (marker)
+
+  return balancers
+}
+
+async function listTaggedRoute53(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new Route53Client(awsClientConfig(connection))
+  const output = await client.send(new ListHostedZonesCommand({}))
+  const zones = output.HostedZones ?? []
+  const zoneIds = zones
+    .map((zone) => zone.Id?.split('/').pop())
+    .filter((value): value is string => Boolean(value))
+
+  const tagsById = new Map<string, Record<string, string>>()
+  for (let index = 0; index < zoneIds.length; index += 10) {
+    const batch = zoneIds.slice(index, index + 10)
+    try {
+      const tagOutput = await client.send(new ListRoute53TagsForResourcesCommand({
+        ResourceType: 'hostedzone',
+        ResourceIds: batch
+      }))
+
+      for (const tagged of tagOutput.ResourceTagSets ?? []) {
+        const tags: Record<string, string> = {}
+        for (const tag of tagged.Tags ?? []) {
+          if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+        }
+        if (tagged.ResourceId) {
+          tagsById.set(tagged.ResourceId, tags)
+        }
+      }
+    } catch {
+      // ignore tag lookup failures
+    }
+  }
+
+  return zones.map((zone) => {
+    const zoneId = zone.Id?.split('/').pop() ?? zone.Id ?? '-'
+    return {
+      id: zone.Id ?? zoneId,
+      name: zone.Name ?? zoneId,
+      tags: tagsById.get(zoneId) ?? {}
+    }
+  })
+}
+
+async function listTaggedAcm(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new ACMClient(awsClientConfig(connection))
+  const certificates: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let nextToken: string | undefined
+
+  do {
+    const output = await client.send(new ListCertificatesCommand({ NextToken: nextToken }))
+    const pageItems = await mapWithConcurrency(output.CertificateSummaryList ?? [], 5, async (certificate) => {
+      let tags: Record<string, string> = {}
+
+      try {
+        const tagOutput = await client.send(new ListTagsForCertificateCommand({ CertificateArn: certificate.CertificateArn ?? '' }))
+        for (const tag of tagOutput.Tags ?? []) {
+          if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+        }
+      } catch {
+        tags = {}
+      }
+
+      return {
+        id: certificate.CertificateArn ?? certificate.DomainName ?? '-',
+        name: certificate.DomainName ?? certificate.CertificateArn ?? '-',
+        tags
+      }
+    })
+
+    certificates.push(...pageItems)
+    nextToken = output.NextToken
+  } while (nextToken)
+
+  return certificates
+}
+
+async function listTaggedKms(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new KMSClient(awsClientConfig(connection))
+  const keys: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let marker: string | undefined
+
+  do {
+    const output = await client.send(new ListKeysCommand({ Marker: marker }))
+    const pageItems = await mapWithConcurrency(output.Keys ?? [], 5, async (key) => {
+      let tags: Record<string, string> = {}
+      let arn = key.KeyArn ?? ''
+
+      try {
+        if (!arn && key.KeyId) {
+          const detail = await client.send(new DescribeKeyCommand({ KeyId: key.KeyId }))
+          arn = detail.KeyMetadata?.Arn ?? arn
+        }
+
+        const tagOutput = await client.send(new ListResourceTagsCommand({ KeyId: key.KeyId ?? '' }))
+        for (const tag of tagOutput.Tags ?? []) {
+          if (tag.TagKey) tags[tag.TagKey] = tag.TagValue ?? ''
+        }
+      } catch {
+        tags = {}
+      }
+
+      return {
+        id: arn || key.KeyId || '-',
+        name: key.KeyId ?? arn ?? '-',
+        tags
+      }
+    })
+
+    keys.push(...pageItems)
+    marker = output.NextMarker
+    if (!output.Truncated) break
+  } while (marker)
+
+  return keys
+}
+
+async function listTaggedWaf(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new WAFV2Client(awsClientConfig(connection))
+  const output = await client.send(new ListWebACLsCommand({ Scope: 'REGIONAL', Limit: 100 }))
+
+  return mapWithConcurrency(output.WebACLs ?? [], 5, async (acl) => {
+    let tags: Record<string, string> = {}
+
+    try {
+      const tagOutput = await client.send(new ListWafTagsForResourceCommand({ ResourceARN: acl.ARN ?? '' }))
+      for (const tag of tagOutput.TagInfoForResource?.TagList ?? []) {
+        if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+      }
+    } catch {
+      tags = {}
+    }
+
+    return {
+      id: acl.ARN ?? acl.Name ?? '-',
+      name: acl.Name ?? acl.ARN ?? '-',
+      tags
+    }
+  })
+}
+
+async function listTaggedCloudWatch(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new CloudWatchClient(awsClientConfig(connection))
+  const alarms: Array<{ id: string; name: string; tags: Record<string, string> }> = []
+  let nextToken: string | undefined
+
+  do {
+    const output = await client.send(new DescribeAlarmsCommand({ NextToken: nextToken }))
+    const pageItems = await mapWithConcurrency(output.MetricAlarms ?? [], 5, async (alarm) => {
+      let tags: Record<string, string> = {}
+
+      try {
+        const tagOutput = await client.send(new ListCloudWatchTagsForResourceCommand({ ResourceARN: alarm.AlarmArn ?? '' }))
+        for (const tag of tagOutput.Tags ?? []) {
+          if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+        }
+      } catch {
+        tags = {}
+      }
+
+      return {
+        id: alarm.AlarmArn ?? alarm.AlarmName ?? '-',
+        name: alarm.AlarmName ?? alarm.AlarmArn ?? '-',
+        tags
+      }
+    })
+
+    alarms.push(...pageItems)
+    nextToken = output.NextToken
+  } while (nextToken)
+
+  return alarms
+}
+
+async function listTaggedCloudTrail(connection: AwsConnection): Promise<Array<{ id: string; name: string; tags: Record<string, string> }>> {
+  const client = new CloudTrailClient(awsClientConfig(connection))
+  const output = await client.send(new DescribeTrailsCommand({}))
+  const trails = output.trailList ?? []
+  const resourceIds = trails.map((trail) => trail.TrailARN ?? trail.Name).filter((value): value is string => Boolean(value))
+  const tagsById = new Map<string, Record<string, string>>()
+
+  for (let index = 0; index < resourceIds.length; index += 20) {
+    const batch = resourceIds.slice(index, index + 20)
+    try {
+      const tagOutput = await client.send(new ListCloudTrailTagsCommand({ ResourceIdList: batch }))
+      for (const item of tagOutput.ResourceTagList ?? []) {
+        const tags: Record<string, string> = {}
+        for (const tag of item.TagsList ?? []) {
+          if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+        }
+        if (item.ResourceId) {
+          tagsById.set(item.ResourceId, tags)
+        }
+      }
+    } catch {
+      // ignore tag lookup failures
+    }
+  }
+
+  return trails.map((trail) => {
+    const id = trail.TrailARN ?? trail.Name ?? '-'
+    return {
+      id,
+      name: trail.Name ?? id,
+      tags: tagsById.get(id) ?? {}
+    }
+  })
+}
+
+async function listTaggedIam(connection: AwsConnection): Promise<Array<{ id: string; name: string; service: string; resourceType: string; tags: Record<string, string> }>> {
+  const client = new IAMClient(awsClientConfig(connection))
+  const resources: Array<{ id: string; name: string; service: string; resourceType: string; tags: Record<string, string> }> = []
+
+  let userMarker: string | undefined
+  do {
+    const output = await client.send(new ListUsersCommand({ Marker: userMarker }))
+    const users = await mapWithConcurrency(output.Users ?? [], 5, async (user) => {
+      let tags: Record<string, string> = {}
+
+      try {
+        const tagOutput = await client.send(new ListUserTagsCommand({ UserName: user.UserName ?? '' }))
+        for (const tag of tagOutput.Tags ?? []) {
+          if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+        }
+      } catch {
+        tags = {}
+      }
+
+      return {
+        id: user.Arn ?? user.UserName ?? '-',
+        name: user.UserName ?? '-',
+        service: 'iam',
+        resourceType: 'IAM User',
+        tags
+      }
+    })
+    resources.push(...users)
+    userMarker = output.IsTruncated ? output.Marker : undefined
+  } while (userMarker)
+
+  let roleMarker: string | undefined
+  do {
+    const output = await client.send(new ListRolesCommand({ Marker: roleMarker }))
+    const roles = await mapWithConcurrency(output.Roles ?? [], 5, async (role) => {
+      let tags: Record<string, string> = {}
+
+      try {
+        const tagOutput = await client.send(new ListRoleTagsCommand({ RoleName: role.RoleName ?? '' }))
+        for (const tag of tagOutput.Tags ?? []) {
+          if (tag.Key) tags[tag.Key] = tag.Value ?? ''
+        }
+      } catch {
+        tags = {}
+      }
+
+      return {
+        id: role.Arn ?? role.RoleName ?? '-',
+        name: role.RoleName ?? '-',
+        service: 'iam',
+        resourceType: 'IAM Role',
+        tags
+      }
+    })
+    resources.push(...roles)
+    roleMarker = output.IsTruncated ? output.Marker : undefined
+  } while (roleMarker)
+
+  return resources
 }
 
 function matchesTag(tags: Record<string, string>, tagKey: string, tagValue?: string): { key: string; value: string } | null {
@@ -1423,17 +1886,30 @@ export async function searchByTag(
   tagKey: string,
   tagValue?: string
 ): Promise<TagSearchResult> {
-  const [ec2, asg, lambda, eks, vpcs, securityGroups, snsTopics, sqsQueues, secrets, keyPairs] = await Promise.all([
+  const [ec2, asg, lambda, eks, s3Buckets, rdsInstances, cloudformationStacks, ecrRepositories, ecsClusters, vpcs, loadBalancers, route53Zones, securityGroups, snsTopics, sqsQueues, acmCertificates, kmsKeys, wafAcls, secrets, keyPairs, cloudwatchAlarms, cloudtrailTrails, iamResources] = await Promise.all([
     safeCount(() => countEc2(connection), { count: 0, instances: [] }),
     safeCount(() => countAsg(connection), { count: 0, groups: [] }),
     safeCount(() => listTaggedLambda(connection), []),
     safeCount(() => listTaggedEks(connection), []),
+    safeCount(() => listTaggedS3(connection), []),
+    safeCount(() => listTaggedRds(connection), []),
+    safeCount(() => listTaggedCloudFormation(connection), []),
+    safeCount(() => listTaggedEcr(connection), []),
+    safeCount(() => listTaggedEcs(connection), []),
     safeCount(() => listTaggedVpcs(connection), []),
+    safeCount(() => listTaggedLoadBalancers(connection), []),
+    safeCount(() => listTaggedRoute53(connection), []),
     safeCount(() => listTaggedSecurityGroups(connection), []),
     safeCount(() => listTaggedSns(connection), []),
     safeCount(() => listTaggedSqs(connection), []),
+    safeCount(() => listTaggedAcm(connection), []),
+    safeCount(() => listTaggedKms(connection), []),
+    safeCount(() => listTaggedWaf(connection), []),
     safeCount(() => listTaggedSecrets(connection), []),
-    safeCount(() => listTaggedKeyPairs(connection), [])
+    safeCount(() => listTaggedKeyPairs(connection), []),
+    safeCount(() => listTaggedCloudWatch(connection), []),
+    safeCount(() => listTaggedCloudTrail(connection), []),
+    safeCount(() => listTaggedIam(connection), [])
   ])
 
   const resources: TaggedResource[] = []
@@ -1493,6 +1969,71 @@ export async function searchByTag(
     }
   }
 
+  for (const bucket of s3Buckets) {
+    const matchedTag = matchesTag(bucket.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: bucket.id,
+        resourceType: 'S3 Bucket',
+        service: 's3',
+        name: bucket.name,
+        tags: bucket.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const instance of rdsInstances) {
+    const matchedTag = matchesTag(instance.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: instance.id,
+        resourceType: 'RDS Instance',
+        service: 'rds',
+        name: instance.name,
+        tags: instance.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const stack of cloudformationStacks) {
+    const matchedTag = matchesTag(stack.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: stack.id,
+        resourceType: 'CloudFormation Stack',
+        service: 'cloudformation',
+        name: stack.name,
+        tags: stack.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const repository of ecrRepositories) {
+    const matchedTag = matchesTag(repository.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: repository.id,
+        resourceType: 'ECR Repository',
+        service: 'ecr',
+        name: repository.name,
+        tags: repository.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const cluster of ecsClusters) {
+    const matchedTag = matchesTag(cluster.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: cluster.id,
+        resourceType: 'ECS Cluster',
+        service: 'ecs',
+        name: cluster.name,
+        tags: cluster.tags
+      }, matchedTag)
+    }
+  }
+
   for (const vpc of vpcs) {
     const matchedTag = matchesTag(vpc.tags, tagKey, tagValue)
     if (matchedTag) {
@@ -1502,6 +2043,32 @@ export async function searchByTag(
         service: 'vpc',
         name: vpc.name,
         tags: vpc.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const balancer of loadBalancers) {
+    const matchedTag = matchesTag(balancer.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: balancer.id,
+        resourceType: 'Load Balancer',
+        service: 'load-balancers',
+        name: balancer.name,
+        tags: balancer.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const zone of route53Zones) {
+    const matchedTag = matchesTag(zone.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: zone.id,
+        resourceType: 'Route 53 Hosted Zone',
+        service: 'route53',
+        name: zone.name,
+        tags: zone.tags
       }, matchedTag)
     }
   }
@@ -1545,6 +2112,45 @@ export async function searchByTag(
     }
   }
 
+  for (const certificate of acmCertificates) {
+    const matchedTag = matchesTag(certificate.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: certificate.id,
+        resourceType: 'ACM Certificate',
+        service: 'acm',
+        name: certificate.name,
+        tags: certificate.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const key of kmsKeys) {
+    const matchedTag = matchesTag(key.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: key.id,
+        resourceType: 'KMS Key',
+        service: 'kms',
+        name: key.name,
+        tags: key.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const acl of wafAcls) {
+    const matchedTag = matchesTag(acl.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: acl.id,
+        resourceType: 'WAF Web ACL',
+        service: 'waf',
+        name: acl.name,
+        tags: acl.tags
+      }, matchedTag)
+    }
+  }
+
   for (const secret of secrets) {
     const matchedTag = matchesTag(secret.tags, tagKey, tagValue)
     if (matchedTag) {
@@ -1567,6 +2173,45 @@ export async function searchByTag(
         service: 'key-pairs',
         name: keyPair.name,
         tags: keyPair.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const alarm of cloudwatchAlarms) {
+    const matchedTag = matchesTag(alarm.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: alarm.id,
+        resourceType: 'CloudWatch Alarm',
+        service: 'cloudwatch',
+        name: alarm.name,
+        tags: alarm.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const trail of cloudtrailTrails) {
+    const matchedTag = matchesTag(trail.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: trail.id,
+        resourceType: 'CloudTrail Trail',
+        service: 'cloudtrail',
+        name: trail.name,
+        tags: trail.tags
+      }, matchedTag)
+    }
+  }
+
+  for (const resource of iamResources) {
+    const matchedTag = matchesTag(resource.tags, tagKey, tagValue)
+    if (matchedTag) {
+      addMatchedTaggedResource(resources, countMap, {
+        resourceId: resource.id,
+        resourceType: resource.resourceType,
+        service: resource.service,
+        name: resource.name,
+        tags: resource.tags
       }, matchedTag)
     }
   }

@@ -8,6 +8,7 @@ type OverviewTab = 'overview' | 'relationships' | 'statistics' | 'tags'
 type RelFilterType = 'all' | string
 type InsightFilter = 'all' | 'info' | 'warning' | 'error'
 type SignalFilter = 'all' | 'cost' | 'security' | 'operations' | 'cleanup'
+type TagResourceTypeFilter = 'all' | string
 
 type ServiceTileDef = {
   key: keyof RegionMetric
@@ -83,6 +84,7 @@ export function OverviewConsole({
   const [pageError, setPageError] = useState('')
   const [tagKey, setTagKey] = useState('')
   const [tagValue, setTagValue] = useState('')
+  const [tagResourceTypeFilter, setTagResourceTypeFilter] = useState<TagResourceTypeFilter>('all')
   const [globalBreakdownService, setGlobalBreakdownService] = useState<ServiceTileDef | null>(null)
   const [costBreakdown, setCostBreakdown] = useState<CostBreakdown | null>(null)
   const [relFilter, setRelFilter] = useState<RelFilterType>('all')
@@ -143,6 +145,7 @@ export function OverviewConsole({
     if (!connectionState.connection || !connectionState.connected || !tagKey.trim()) return
     setLoading(true)
     setPageError('')
+    setTagResourceTypeFilter('all')
     try {
       setTagResults(await searchByTag(connectionState.connection, tagKey.trim(), tagValue.trim() || undefined))
     } catch (error) {
@@ -167,6 +170,17 @@ export function OverviewConsole({
       .filter((r) => r.count > 0)
       .sort((a, b) => b.count - a.count)
   }, [globalMetrics, globalBreakdownService])
+
+  const tagResourceTypes = useMemo(() => {
+    if (!tagResults) return []
+    return [...new Set(tagResults.resources.map((resource) => resource.resourceType))].sort((a, b) => a.localeCompare(b))
+  }, [tagResults])
+
+  const filteredTagResources = useMemo(() => {
+    if (!tagResults) return []
+    if (tagResourceTypeFilter === 'all') return tagResults.resources
+    return tagResults.resources.filter((resource) => resource.resourceType === tagResourceTypeFilter)
+  }, [tagResults, tagResourceTypeFilter])
 
   const content = (
     <>
@@ -776,12 +790,26 @@ export function OverviewConsole({
                 <section className="workspace-grid">
                   <div className="column stack">
                     <div className="panel">
-                      <div className="panel-header"><h3>Matched Resources</h3></div>
+                      <div className="panel-header">
+                        <h3>Matched Resources</h3>
+                        <span className="hero-path" style={{ margin: 0 }}>{filteredTagResources.length} of {tagResults.resources.length}</span>
+                      </div>
+                      <div className="inline-form" style={{ marginBottom: '0.85rem' }}>
+                        <label className="field" style={{ minWidth: '220px' }}>
+                          <span>Resource Type</span>
+                          <select value={tagResourceTypeFilter} onChange={(event) => setTagResourceTypeFilter(event.target.value)}>
+                            <option value="all">All resource types</option>
+                            {tagResourceTypes.map((resourceType) => (
+                              <option key={resourceType} value={resourceType}>{resourceType}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
                       <div className="table-grid">
                         <div className="table-row table-head overview-tag-grid">
                           <div>Name</div><div>Type</div><div>Service</div><div>Resource ID</div>
                         </div>
-                        {tagResults.resources.map((resource) => (
+                        {filteredTagResources.map((resource) => (
                           <div key={`${resource.service}-${resource.resourceId}`} className="table-row overview-tag-grid">
                             <div>{resource.name}</div>
                             <div>{resource.resourceType}</div>
@@ -789,7 +817,7 @@ export function OverviewConsole({
                             <div className="mono">{resource.resourceId}</div>
                           </div>
                         ))}
-                        {!tagResults.resources.length && <div className="empty-state compact">No resources matched.</div>}
+                        {!filteredTagResources.length && <div className="empty-state compact">No resources matched the selected type.</div>}
                       </div>
                     </div>
                   </div>
