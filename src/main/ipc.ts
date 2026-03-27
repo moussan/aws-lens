@@ -16,6 +16,7 @@ import {
   detectTerraformCli,
   getCachedCliInfo,
   getCommandLogs,
+  getMissingRequiredInputs,
   getProject,
   hasSavedPlan,
   listProjectSummaries,
@@ -140,6 +141,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   )
   ipcMain.handle('terraform:inputs:update', async (_event, profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) =>
     wrap(() => updateProjectInputs(profileName, projectId, inputs, varFile))
+  )
+  ipcMain.handle('terraform:inputs:missing-required', async (_event, profileName: string, projectId: string) =>
+    wrap(() => getMissingRequiredInputs(profileName, projectId))
   )
   ipcMain.handle('terraform:logs:list', async (_event, projectId: string) => wrap(() => getCommandLogs(projectId)))
   ipcMain.handle('terraform:command:run', async (_event, request: TerraformCommandRequest) =>

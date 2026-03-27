@@ -78,6 +78,10 @@ export async function updateInputs(profileName: string, projectId: string, input
   return unwrap(await bridge().updateInputs(profileName, projectId, inputs, varFile) as Wrapped<TerraformProject>)
 }
 
+export async function getMissingRequiredInputs(profileName: string, projectId: string): Promise<string[]> {
+  return unwrap(await bridge().getMissingRequiredInputs(profileName, projectId) as Wrapped<string[]>)
+}
+
 export async function listCommandLogs(projectId: string): Promise<TerraformCommandLog[]> {
   return unwrap(await bridge().listCommandLogs(projectId) as Wrapped<TerraformCommandLog[]>)
 }

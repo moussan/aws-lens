@@ -2,169 +2,71 @@
 
 # AWS Lens
 
-**Desktop companion for working across multiple AWS accounts and regions, designed to speed up debugging and common quick actions by turning multi-step console tasks into simpler flows and grouping related services into a more informative interface, not to replace the AWS Console.**
+Desktop AWS operator workspace built with Electron, React, and TypeScript. AWS Lens is designed for fast profile switching, region-aware service exploration, embedded terminal workflows, and a handful of opinionated operational surfaces such as Session Hub, Compliance Center, and Terraform drift inspection.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
-[![Platform: Windows](https://img.shields.io/badge/platform-Windows-blue.svg)](#package-desktop-builds)
-[![Platform: macOS](https://img.shields.io/badge/platform-macOS-blue.svg)](#package-desktop-builds)
-[![Platform: Linux](https://img.shields.io/badge/platform-Linux-blue.svg)](#package-desktop-builds)
-[![Electron](https://img.shields.io/badge/Electron-latest-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Electron](https://img.shields.io/badge/Electron-35-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg?logo=react&logoColor=white)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![AWS SDK](https://img.shields.io/badge/AWS_SDK-v3-FF9900.svg?logo=amazon-aws&logoColor=white)](https://docs.aws.amazon.com/AWSJavaScriptSDK/v3/latest/)
-[![Terraform](https://img.shields.io/badge/Terraform-workspace-7B42BC.svg?logo=terraform&logoColor=white)](https://www.terraform.io/)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![pnpm](https://img.shields.io/badge/pnpm-package_manager-F69220.svg?logo=pnpm&logoColor=white)](https://pnpm.io/)
+[![pnpm](https://img.shields.io/badge/pnpm-required-F69220.svg?logo=pnpm&logoColor=white)](https://pnpm.io/)
 
----
-
-<img src="images/overview.png" alt="AWS Lens Overview" width="100%" />
+<img src="images/overview.png" alt="AWS Lens overview" width="100%" />
 
 </div>
 
----
+## Overview
 
-## What It Does
+AWS Lens reads local AWS profiles, lets you activate a profile and region, and keeps that context synchronized across the UI and the embedded terminal. The app does not try to replace the AWS Console wholesale. It focuses on faster inspection, common actions, cross-account session handling, and a more consolidated operator workflow for services you touch often.
 
-- Loads AWS CLI profiles from local config and credentials files
-- Lets you select a profile and region from a catalog-oriented shell
-- Adds a Session Hub workspace for saving assume-role targets and reusing temporary cross-account sessions
-- Exposes service consoles for AWS inventory, details, and selected mutations
-- Adds a Compliance Center workspace for grouped security, operational, cost, and compliance findings
-- Opens an embedded terminal with AWS environment variables aligned to the active base profile or assumed session
-- Includes a Terraform workspace for managing local Terraform project folders, running CLI commands, and inspecting Terraform drift against live AWS inventory
-- Packages as a desktop app with `electron-builder`
+The current implementation is an Electron desktop app with:
 
-## Extended Features
+- A profile catalog instead of a simple dropdown
+- Region-aware service navigation
+- Session Hub for saved assume-role targets and temporary STS sessions
+- Compliance Center for grouped findings
+- Service-specific consoles for common AWS workloads
+- An embedded terminal backed by `node-pty` and `xterm`
+- A Terraform workspace with drift inspection against live AWS resources
 
-### Multi-Profile & Multi-Region Management
-Switch between AWS CLI profiles and regions instantly. The app reads your local `~/.aws/config` and `~/.aws/credentials`, so there is nothing extra to configure. Every service console and the embedded terminal stay in sync with the active connection.
+### App Overview
+
+![AWS Lens overview](images/overview.png)
+Main application shell with the left navigation, active AWS context, service workspace, and footer terminal toggle.
 
 ### Session Hub
-Session Hub turns STS assume-role flows into a reusable app-level workflow. You can save cross-account role targets, assume them on demand, activate an assumed session as the current app context, see expiration countdowns, re-assume expired sessions, and open a terminal already bound to the temporary credentials.
 
-The security posture is intentionally conservative:
+![AWS Lens Session Hub](images/session-hub.png)
 
-- Saved role targets are persisted locally
-- Temporary STS credentials are kept in memory only
-- Temporary credentials are not written into `~/.aws/config` or `~/.aws/credentials`
-- Base profile flows remain available and can be restored instantly
-
-### 25+ AWS Service Consoles
-Browse, inspect, and act on resources across a wide range of AWS services — from compute (EC2, Lambda, ECS, EKS) and storage (S3, ECR) to networking (VPC, Route 53, Load Balancers, Security Groups), security (IAM, Identity Center, ACM, WAF, KMS, Secrets Manager), messaging (SNS, SQS), databases (RDS), monitoring (CloudWatch, CloudTrail), and infrastructure (CloudFormation, Auto Scaling, STS, Key Pairs).
-
-### S3 Governance Tools
-The S3 console now includes governance, posture, and hygiene tooling inside the existing bucket and object workflow rather than a separate page.
-
-S3 governance capabilities include:
-
-- Bucket posture badges in the bucket list for public access, encryption, and versioning state
-- A governance summary across all buckets with drill-down lists for high/critical posture, public access risk, missing encryption, missing lifecycle rules, and important buckets without versioning
-- A bucket governance tab with detailed posture checks for public access block, default encryption, versioning, lifecycle configuration, bucket policy, logging, and replication
-- Bucket findings with severity plus a recommended next step for each issue
-- Safe quick actions for enabling versioning, enabling default encryption, and opening or editing bucket policy JSON
-- Read-only lifecycle configuration inspection from the renderer while AWS calls remain in the main process
-- Object hygiene helpers for large-object detection, old-object filtering, and storage class summaries within the current prefix
-
-The current S3 governance feature intentionally favors read-heavy posture analysis over risky mutation coverage. Supported mutations require explicit user confirmation, and destructive bucket changes are not automated.
-
-### Embedded Terminal
-A fully integrated terminal powered by `node-pty` and `xterm.js`. The terminal session automatically inherits the AWS environment for your current selection, whether that is a base profile or an assumed session, so AWS CLI, `kubectl`, `docker`, and other tools work without manual env setup.
+Cross-account session workspace for saved assume-role targets, active temporary sessions, and terminal handoff.
 
 ### Compliance Center
-The Compliance Center is a dedicated workspace for the active AWS profile and region. It groups findings by severity (`high`, `medium`, `low`) and category (`security`, `cost`, `operations`, `compliance`), supports filters for severity, category, service, and search text, and exposes safe remediation actions where the app already supports them.
 
-Initial checks include:
+![AWS Lens Compliance Center](images/complience-center.png)
 
-- CloudTrail not configured or not actively logging
-- CloudWatch alarms missing while EC2 resources exist
-- Load balancers without WAF associations
-- Security groups with internet-exposed risky inbound rules
-- Secrets Manager secrets with rotation disabled
-- Excess stopped EC2 instances
-- Large unused-looking key pair inventory
-- VPC sprawl and security group sprawl
-- Weak tagging coverage across supported resources
+Compliance Center with severity totals, category grouping, filters, and guided findings for the active profile and region.
 
 ### Terraform Workspace
-The Terraform workspace now also includes operator-focused Drift Intelligence. It compares Terraform-managed inventory with live AWS inventory, highlights `in_sync`, `drifted`, `missing_in_aws`, `unmanaged_in_aws`, and `unsupported` items, and provides AWS console plus `terraform state show` shortcuts from the drift view.
 
-Terraform commands also run against the active app context, so assumed sessions can be reused for Terraform drift checks and CLI runs without editing local AWS credential files.
+![AWS Lens Terraform Workspace](images/terraform-main.png)
 
-Terraform Drift Intelligence currently provides:
+Terraform project workspace with project discovery, command actions, resource details, and embedded infrastructure diagram support.
 
-- A `Drift` tab inside each Terraform project workspace
-- Summary counts and filters for `in_sync`, `drifted`, `missing_in_aws`, `unmanaged_in_aws`, and `unsupported`
-- Per-item details including Terraform address, resource type, logical name, cloud identifier, region, explanation, and suggested next step
-- AWS console shortcuts for matched live resources
-- A terminal shortcut for `terraform state show` on supported Terraform-managed items
-- Clear `unsupported` labeling for Terraform AWS resource types not yet covered by the initial comparison set
+![AWS Lens Terraform Visualization](images/terraform-visualization.png)
 
-Initial drift coverage includes:
+Expanded infrastructure visualization for Terraform-managed resources and their relationships.
 
-- EC2 instances
-- Security groups
-- VPCs
-- Subnets
-- S3 buckets
-- Lambda functions
-- RDS instances
-- ECR repositories
-Manage local Terraform projects from within the app. Discover project folders, run `plan`, `apply`, `destroy`, and other CLI commands, and visualize Terraform state — all without leaving the console.
 
-### Cross-Platform Desktop App
-Built with Electron and packaged via `electron-builder` for Windows (NSIS installer), macOS (DMG + ZIP), and Linux (deb + AppImage). Native `node-pty` is unpacked from ASAR automatically so the terminal works in production builds.
+## Implemented Areas
 
-### Modern Tech Stack
-React 18 renderer, TypeScript with strict checking, `electron-vite` for fast HMR development, and AWS SDK for JavaScript v3 with modular service clients for minimal bundle size.
+The current renderer wires these screens and workspaces:
 
-## Current Stack
-
-- Electron
-- React 18
-- TypeScript
-- `electron-vite`
-- `electron-builder`
-- AWS SDK for JavaScript v3
-- `node-pty`
-- `xterm`
-
-## Project Layout
-
-```text
-.
-|-- assets/
-|-- src/
-|   |-- main/        # Electron main process, AWS clients, IPC handlers, terminal, Terraform orchestration
-|   |-- preload/     # contextBridge API exposed to the renderer
-|   |-- renderer/    # React UI and service consoles
-|   `-- shared/      # shared TypeScript types
-|-- electron.vite.config.ts
-|-- electron-builder.yml
-|-- package.json
-`-- tsconfig.json
-```
-
-Key areas:
-
-- `src/main/main.ts`: creates the BrowserWindow and registers IPC handlers
-- `src/main/aws/`: AWS SDK client creation and per-service data/action modules
-- `src/main/*Ipc.ts`: Electron IPC entry points for renderer requests
-- `src/main/terminalIpc.ts`: embedded terminal session management via `node-pty`
-- `src/main/terraform.ts`: Terraform project discovery, command execution, and state handling
-- `src/main/terraformDrift.ts`: Terraform drift normalization and live AWS comparison logic
-- `src/preload/index.ts`: safe renderer bridge
-- `src/renderer/src/App.tsx`: top-level shell, profile catalog, service routing, and terminal toggle
-- `src/shared/types.ts`: shared contracts between main, preload, and renderer
-
-## Implemented App Areas
-
-The renderer currently wires these service or workspace screens:
-
-- Terraform
 - Overview
+- Direct Resource Access
 - Session Hub
 - Compliance Center
+- Terraform
 - EC2
 - CloudWatch
 - S3
@@ -191,16 +93,96 @@ The renderer currently wires these service or workspace screens:
 - KMS
 - WAF
 
-## Local State
+## Key Workflows
 
-The app reads AWS configuration from the standard local AWS files and also stores app-specific data under Electron user data.
+### Profile And Region Context
 
-- AWS profiles: `~/.aws/config` and `~/.aws/credentials`
-- Session Hub targets: Electron `userData` as `session-hub.json`
-- Assumed STS session credentials: memory only, not persisted to disk
-- Terraform workspace state: Electron `userData` as `terraform-workspace-state.json`
+- Reads AWS profiles from the standard local AWS config and credentials files
+- Supports selecting a profile from a searchable catalog
+- Allows importing config-based profiles into the app flow
+- Supports adding credentials-managed profiles from the UI
+- Keeps the selected profile or assumed session aligned with the active region
 
-Depending on the service flow, local command-line tools may also be used if they are installed:
+### Session Hub
+
+- Saves assume-role targets locally
+- Assumes roles through STS on demand
+- Lets you activate an assumed session as the app context
+- Tracks session expiration and supports re-assume flows
+- Keeps temporary credentials in memory only
+
+### Service Consoles
+
+The codebase includes dedicated main-process AWS modules and renderer consoles for a broad service set. The app is strongest where it combines inventory views with targeted operator actions rather than mirroring every AWS Console surface.
+
+Examples from the current implementation:
+
+- EC2, CloudWatch, and CloudTrail inspection flows
+- S3 bucket, object, and governance-oriented views
+- ECS and EKS workflows with terminal handoff support
+- Route 53 record workflows
+- IAM, Identity Center, KMS, Secrets Manager, and WAF management surfaces
+- Load balancer, VPC, and security group navigation
+
+### Compliance Center
+
+The Compliance Center aggregates findings for the active profile and region and groups them by severity and category. The current implementation focuses on surfacing actionable checks, filtering them, and exposing safe remediation paths where the app already supports them.
+
+### Terraform Workspace
+
+- Discovers and manages local Terraform project folders
+- Runs Terraform commands from the desktop app
+- Tracks long-running apply/destroy operations during app shutdown
+- Includes drift inspection logic in [`src/main/terraformDrift.ts`](/C:/Users/bora_/Desktop/Projects/electron_migration/src/main/terraformDrift.ts)
+- Exposes shortcuts for AWS console navigation and `terraform state show` from supported drift items
+
+### Embedded Terminal
+
+- Implemented with `node-pty` and `xterm`
+- Shares the active AWS context with the rest of the application
+- Supports running follow-up commands from service screens
+- Stays available as a bottom panel toggled from the footer
+
+## Architecture
+
+```text
+.
+|-- assets/
+|-- images/
+|-- src/
+|   |-- main/        # Electron main process, AWS clients, IPC handlers, terminal, Terraform orchestration
+|   |-- preload/     # contextBridge API exposed to the renderer
+|   `-- renderer/    # React UI and service consoles
+|-- electron-builder.yml
+|-- electron.vite.config.ts
+|-- package.json
+`-- tsconfig.json
+```
+
+Important entry points:
+
+- [`src/main/main.ts`](/C:/Users/bora_/Desktop/Projects/electron_migration/src/main/main.ts): Electron window creation, app lifecycle, graceful shutdown
+- [`src/main/awsIpc.ts`](/C:/Users/bora_/Desktop/Projects/electron_migration/src/main/awsIpc.ts): AWS-related IPC handlers
+- [`src/main/terminalIpc.ts`](/C:/Users/bora_/Desktop/Projects/electron_migration/src/main/terminalIpc.ts): PTY lifecycle and terminal bridge
+- [`src/main/terraform.ts`](/C:/Users/bora_/Desktop/Projects/electron_migration/src/main/terraform.ts): Terraform command orchestration
+- [`src/renderer/src/App.tsx`](/C:/Users/bora_/Desktop/Projects/electron_migration/src/renderer/src/App.tsx): app shell, navigation, profile catalog, service routing
+- [`src/preload/index.ts`](/C:/Users/bora_/Desktop/Projects/electron_migration/src/preload/index.ts): renderer-safe Electron bridge
+
+## Local State And Dependencies
+
+AWS Lens relies on your local workstation state rather than a hosted backend.
+
+Reads from:
+
+- `~/.aws/config`
+- `~/.aws/credentials`
+
+Stores app data under Electron `userData`, including:
+
+- `session-hub.json`
+- `terraform-workspace-state.json`
+
+Optional local tools that complement the app:
 
 - AWS CLI
 - Terraform CLI
@@ -209,38 +191,44 @@ Depending on the service flow, local command-line tools may also be used if they
 
 ## Prerequisites
 
-- Node.js 20+ recommended
+- Node.js 20+
 - `pnpm`
-- Valid local AWS credentials for the profiles you want to use
+- Local AWS credentials for the profiles you want to use
 
 Optional:
 
-- Terraform CLI for the Terraform workspace
-- AWS CLI for local verification outside the app
-- `kubectl` for EKS-related terminal workflows
-- `docker` for ECR workflows
+- Terraform CLI for Terraform workspace features
+- AWS CLI for terminal-based verification
+- `kubectl` for EKS-related workflows
+- `docker` for ECR-related workflows
 
-## Install
+## Development
+
+Install dependencies:
 
 ```powershell
 pnpm install
 ```
 
-## Run In Development
+Run the app in development:
 
 ```powershell
 pnpm dev
 ```
 
-This starts the Electron app through `electron-vite`.
+Preview the built app:
 
-## Typecheck
+```powershell
+pnpm preview
+```
+
+Type-check the project:
 
 ```powershell
 pnpm typecheck
 ```
 
-## Production Build
+Build production bundles:
 
 ```powershell
 pnpm build
@@ -248,13 +236,15 @@ pnpm build
 
 Build output is written to `out/`.
 
-## Package Desktop Builds
+## Packaging
+
+Create desktop packages:
 
 ```powershell
 pnpm dist
 ```
 
-Platform-specific packaging commands:
+Platform-specific packaging:
 
 ```powershell
 pnpm dist:win
@@ -264,19 +254,23 @@ pnpm dist:linux
 
 Packaged artifacts are written to `release/`.
 
-## Development Notes
+The current builder config in [`electron-builder.yml`](/C:/Users/bora_/Desktop/Projects/electron_migration/electron-builder.yml) targets:
 
-- Renderer code should talk to Electron through the preload bridge instead of reaching into Node APIs directly.
-- AWS service actions are implemented in the main process and exposed through focused IPC handlers.
-- The embedded terminal is a shared PTY session whose AWS context is updated when the active profile, assumed session, or region changes.
-- Session Hub persists assume-role definitions but keeps temporary STS credentials in memory only.
-- Terraform support is local-workspace oriented and depends on the host having the Terraform CLI available.
-- Drift detection is intentionally incremental. It compares existence, selected identifiers, and important attributes for a supported subset of AWS resource types rather than attempting full Terraform semantic diffing.
-- Packaging unpacks `node-pty` from ASAR so the terminal works in packaged builds.
+- Windows: NSIS
+- macOS: DMG and ZIP
+- Linux: deb and AppImage
 
-## Contributing
+`node-pty` is unpacked from ASAR for packaged builds.
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the expected workflow, testing expectations, and documentation rules.
+## Notes For Contributors
+
+- Renderer code should use the preload bridge rather than direct Node access
+- AWS-facing actions live in the Electron main process
+- Temporary assumed-role credentials are not persisted to AWS config files
+- Terraform support is local-workspace oriented, not remote-service oriented
+- The app blocks accidental shutdown while Terraform apply/destroy is active
+
+Additional project guidance lives in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 

@@ -27,6 +27,7 @@ import {
   detectMissingVars,
   getDrift,
   getProject,
+  getMissingRequiredInputs,
   listProjects,
   reloadProject,
   removeProject,
@@ -977,6 +978,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
   // Dialogs
   const [showInputs, setShowInputs] = useState(false)
   const [prefillMissing, setPrefillMissing] = useState<string[]>([])
+  const [resumeCommandAfterInputs, setResumeCommandAfterInputs] = useState<null | 'plan' | 'apply' | 'destroy'>(null)
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string; description: string; confirmWord: string; onConfirm: () => void
   } | null>(null)
@@ -1140,6 +1142,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
   function handleShowInputs() {
     if (!detail) return
     setPrefillMissing([])
+    setResumeCommandAfterInputs(null)
     setShowInputs(true)
   }
 
@@ -1150,7 +1153,21 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       setDetail(updated)
       setShowInputs(false)
       setPrefillMissing([])
+      setMsg('')
+      const commandToResume = resumeCommandAfterInputs
+      setResumeCommandAfterInputs(null)
       await reload()
+      if (commandToResume) {
+        const log = await runCommand({ profileName: contextKey, connection, projectId: updated.id, command: commandToResume })
+        setLastLog(log)
+        const refreshed = await reloadProject(contextKey, updated.id)
+        setDetail(refreshed)
+        await reload()
+        if (log.success && commandToResume === 'plan') {
+          setMsg('')
+          setDetailTab('actions')
+        }
+      }
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err))
     }
@@ -1185,9 +1202,31 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
 
   function handleInit() { void execCommand('init') }
   function handlePlan() {
-    void execCommand('plan').then(() => {
-      setDetailTab('actions')
-    })
+    if (!detail || running) return
+    void getMissingRequiredInputs(contextKey, detail.id)
+      .then((missing) => {
+        const unresolved = uniqueStrings(missing)
+        if (unresolved.length > 0) {
+          setPrefillMissing(unresolved)
+          setResumeCommandAfterInputs('plan')
+          setMsg(
+            unresolved.length === 1
+              ? `Missing required Terraform variable: ${unresolved[0]}. The Inputs dialog is open so you can provide it.`
+              : `Missing required Terraform variables: ${unresolved.join(', ')}. The Inputs dialog is open so you can provide them.`
+          )
+          setShowInputs(true)
+          return null
+        }
+        return execCommand('plan')
+      })
+      .then((log) => {
+        if (log) {
+          setDetailTab('actions')
+        }
+      })
+      .catch((err) => {
+        setMsg(err instanceof Error ? err.message : String(err))
+      })
   }
 
   function handleApply() {

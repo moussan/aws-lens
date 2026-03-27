@@ -590,6 +590,8 @@ const api = {
   setSelectedProjectId: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:selected:set', profileName, projectId),
   updateInputs: (profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) =>
     ipcRenderer.invoke('terraform:inputs:update', profileName, projectId, inputs, varFile),
+  getMissingRequiredInputs: (profileName: string, projectId: string) =>
+    ipcRenderer.invoke('terraform:inputs:missing-required', profileName, projectId),
   listCommandLogs: (projectId: string) => ipcRenderer.invoke('terraform:logs:list', projectId),
   runCommand: (request: TerraformCommandRequest) => ipcRenderer.invoke('terraform:command:run', request),
   hasSavedPlan: (projectId: string) => ipcRenderer.invoke('terraform:plan:has-saved', projectId),

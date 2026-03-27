@@ -857,6 +857,25 @@ function readMergedInputValues(project: StoredProject): Record<string, unknown> 
   }
 }
 
+export function getMissingRequiredInputs(profileName: string, projectId: string): string[] {
+  const project = getStoredProjects(profileName).find((p) => p.id === projectId)
+  if (!project) throw new Error('Project not found.')
+
+  const { variables } = inferMetadata(project.rootPath)
+  const mergedInputs = readMergedInputValues(project)
+
+  return variables
+    .filter((variable) => {
+      if (variable.hasDefault) return false
+      if (!(variable.name in mergedInputs)) return true
+      const value = mergedInputs[variable.name]
+      if (value === null || value === undefined) return true
+      if (typeof value === 'string' && value.trim().length === 0) return true
+      return false
+    })
+    .map((variable) => variable.name)
+}
+
 function prepareStateCommandVarFile(project: StoredProject): (() => void) | null {
   const mergedValues = readMergedInputValues(project)
   if (Object.keys(mergedValues).length === 0) {
