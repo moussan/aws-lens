@@ -53,6 +53,21 @@ The security posture is intentionally conservative:
 ### 25+ AWS Service Consoles
 Browse, inspect, and act on resources across a wide range of AWS services — from compute (EC2, Lambda, ECS, EKS) and storage (S3, ECR) to networking (VPC, Route 53, Load Balancers, Security Groups), security (IAM, Identity Center, ACM, WAF, KMS, Secrets Manager), messaging (SNS, SQS), databases (RDS), monitoring (CloudWatch, CloudTrail), and infrastructure (CloudFormation, Auto Scaling, STS, Key Pairs).
 
+### S3 Governance Tools
+The S3 console now includes governance, posture, and hygiene tooling inside the existing bucket and object workflow rather than a separate page.
+
+S3 governance capabilities include:
+
+- Bucket posture badges in the bucket list for public access, encryption, and versioning state
+- A governance summary across all buckets with drill-down lists for high/critical posture, public access risk, missing encryption, missing lifecycle rules, and important buckets without versioning
+- A bucket governance tab with detailed posture checks for public access block, default encryption, versioning, lifecycle configuration, bucket policy, logging, and replication
+- Bucket findings with severity plus a recommended next step for each issue
+- Safe quick actions for enabling versioning, enabling default encryption, and opening or editing bucket policy JSON
+- Read-only lifecycle configuration inspection from the renderer while AWS calls remain in the main process
+- Object hygiene helpers for large-object detection, old-object filtering, and storage class summaries within the current prefix
+
+The current S3 governance feature intentionally favors read-heavy posture analysis over risky mutation coverage. Supported mutations require explicit user confirmation, and destructive bucket changes are not automated.
+
 ### Embedded Terminal
 A fully integrated terminal powered by `node-pty` and `xterm.js`. The terminal session automatically inherits the AWS environment for your current selection, whether that is a base profile or an assumed session, so AWS CLI, `kubectl`, `docker`, and other tools work without manual env setup.
 
