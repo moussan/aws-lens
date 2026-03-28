@@ -40,6 +40,7 @@ type Screen = 'profiles' | 'direct-access' | ServiceId
 type PendingTerminalCommand = { id: number; command: string } | null
 type RefreshState = { screen: Screen; sawPending: boolean } | null
 type FabMode = 'closed' | 'menu' | 'credentials'
+const PINNED_SERVICES_STORAGE_KEY = 'aws-lens:pinned-services'
 type Route53Focus = {
   token: number
   record: {
@@ -316,6 +317,7 @@ export function App() {
   const [navOpen, setNavOpen] = useState(true)
   const [visitedScreens, setVisitedScreens] = useState<Screen[]>(['profiles'])
   const [services, setServices] = useState<ServiceDescriptor[]>([])
+  const [pinnedServiceIds, setPinnedServiceIds] = useState<ServiceId[]>([])
   const [catalogError, setCatalogError] = useState('')
   const [profileSearch, setProfileSearch] = useState('')
   const [cloudwatchEc2Id, setCloudwatchEc2Id] = useState<string | undefined>(undefined)
@@ -347,8 +349,38 @@ export function App() {
     })
   }, [])
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(PINNED_SERVICES_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return
+      setPinnedServiceIds(parsed.filter((value): value is ServiceId => typeof value === 'string'))
+    } catch {
+      // Ignore malformed persisted pin state.
+    }
+  }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(PINNED_SERVICES_STORAGE_KEY, JSON.stringify(pinnedServiceIds))
+  }, [pinnedServiceIds])
+
+  useEffect(() => {
+    if (services.length === 0) return
+    const validServiceIds = new Set(services.map((service) => service.id))
+    setPinnedServiceIds((current) => current.filter((serviceId) => validServiceIds.has(serviceId)))
+  }, [services])
+
+  const pinnedServices = useMemo(() => {
+    const serviceById = new Map(services.map((service) => [service.id, service]))
+    return pinnedServiceIds
+      .map((serviceId) => serviceById.get(serviceId) ?? null)
+      .filter((service): service is ServiceDescriptor => service !== null && service.id !== 'overview' && service.id !== 'session-hub')
+  }, [pinnedServiceIds, services])
+
   const groupedServices = useMemo(() => {
     const grouped = new Map<string, ServiceDescriptor[]>()
+    const pinnedIds = new Set(pinnedServiceIds)
     for (const service of services) {
       const category = service.category || 'General'
       const list = grouped.get(category) ?? []
@@ -361,7 +393,7 @@ export function App() {
       .map(([category, items]) => [
         category,
         items
-          .filter((service) => service.id !== 'overview' && service.id !== 'session-hub')
+          .filter((service) => service.id !== 'overview' && service.id !== 'session-hub' && !pinnedIds.has(service.id))
           .sort((a, b) => a.label.localeCompare(b.label))
       ] as const)
       .sort(([left], [right]) => {
@@ -369,7 +401,7 @@ export function App() {
         const rightIndex = order.get(right) ?? Number.MAX_SAFE_INTEGER
         return leftIndex - rightIndex || left.localeCompare(right)
       })
-  }, [services])
+  }, [pinnedServiceIds, services])
 
   const filteredProfiles = useMemo(() => {
     const query = profileSearch.trim().toLowerCase()
@@ -404,6 +436,44 @@ export function App() {
   const connectionScopeKey = connectionState.connection
     ? `${connectionState.connection.sessionId}:${connectionState.connection.region}`
     : 'disconnected'
+
+  function togglePinnedService(serviceId: ServiceId) {
+    setPinnedServiceIds((current) =>
+      current.includes(serviceId)
+        ? current.filter((id) => id !== serviceId)
+        : [...current, serviceId]
+    )
+  }
+
+  function renderServiceLink(service: ServiceDescriptor, options?: { pinned?: boolean }) {
+    const isPinned = pinnedServiceIds.includes(service.id)
+    return (
+      <div key={service.id} className={`service-link-row ${screen === service.id ? 'active' : ''}`}>
+        <button
+          type="button"
+          className={`service-link ${screen === service.id ? 'active' : ''}`}
+          disabled={!connectionState.connected}
+          onClick={() => {
+            if (service.id === 'cloudwatch') setCloudwatchEc2Id(undefined)
+            setScreen(service.id)
+          }}
+        >
+          <span>{service.label}</span>
+          {options?.pinned && <span className="service-link-badge">Pinned</span>}
+        </button>
+        <button
+          type="button"
+          className={`pin-toggle ${isPinned ? 'active' : ''}`}
+          aria-label={isPinned ? `Unpin ${service.label}` : `Pin ${service.label}`}
+          title={isPinned ? `Unpin ${service.label}` : `Pin ${service.label}`}
+          disabled={!connectionState.connected}
+          onClick={() => togglePinnedService(service.id)}
+        >
+          {isPinned ? '★' : '☆'}
+        </button>
+      </div>
+    )
+  }
 
   useEffect(() => {
     return () => {
@@ -816,6 +886,17 @@ export function App() {
           </div>
 
           <div className={`service-nav-scroll ${!connectionState.connected ? 'nav-disabled' : ''}`}>
+            {pinnedServices.length > 0 && (
+              <>
+                <section className="service-group">
+                  <div className="service-group-title">Pinned</div>
+                  <div className="service-group-list">
+                    {pinnedServices.map((service) => renderServiceLink(service, { pinned: true }))}
+                  </div>
+                </section>
+                <div className="service-nav-divider" aria-hidden="true" />
+              </>
+            )}
             {overviewService && (
               <button
                 type="button"
@@ -849,20 +930,7 @@ export function App() {
                 <section key={category} className="service-group">
                   <div className="service-group-title">{category}</div>
                   <div className="service-group-list">
-                    {items.map((service) => (
-                      <button
-                        key={service.id}
-                        type="button"
-                        className={`service-link ${screen === service.id ? 'active' : ''}`}
-                        disabled={!connectionState.connected}
-                        onClick={() => {
-                          if (service.id === 'cloudwatch') setCloudwatchEc2Id(undefined)
-                          setScreen(service.id)
-                        }}
-                      >
-                        <span>{service.label}</span>
-                      </button>
-                    ))}
+                    {items.map((service) => renderServiceLink(service))}
                   </div>
                 </section>
               )
