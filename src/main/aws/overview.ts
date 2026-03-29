@@ -61,6 +61,7 @@ const COST_WAF_ACL = 5.0
 const COST_SECRET = 0.4
 const COST_KEY_PAIR = 0
 const COST_CW_ALARM = 0.1
+const COST_EXPLORER_METRIC = 'UnblendedCost' as const
 
 /* ── helpers ──────────────────────────────────────────────── */
 
@@ -1161,7 +1162,68 @@ function getCurrentMonthTimePeriod(): { start: Date; end: Date; label: string } 
 }
 
 function formatCostExplorerDate(date: Date): string {
-  return date.toISOString().slice(0, 10)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+
+  return `${year}-${month}-${day}`
+}
+
+function roundCurrency(amount: number): number {
+  return Math.round(amount * 100) / 100
+}
+
+function readCostMetricAmount(
+  metrics: Record<string, { Amount?: string; Unit?: string } | undefined> | undefined
+): number {
+  return parseFloat(metrics?.[COST_EXPLORER_METRIC]?.Amount ?? '0')
+}
+
+async function fetchCurrentMonthCostBreakdown(connection: AwsConnection): Promise<CostBreakdown> {
+  const client = new CostExplorerClient(awsClientConfig({ ...connection, region: 'us-east-1' }))
+  const { start, end, label } = getCurrentMonthTimePeriod()
+  const timePeriod = { Start: formatCostExplorerDate(start), End: formatCostExplorerDate(end) }
+
+  const [totalResp, groupedResp] = await Promise.all([
+    client.send(new GetCostAndUsageCommand({
+      TimePeriod: timePeriod,
+      Granularity: 'MONTHLY',
+      Metrics: [COST_EXPLORER_METRIC]
+    })),
+    client.send(new GetCostAndUsageCommand({
+      TimePeriod: timePeriod,
+      Granularity: 'MONTHLY',
+      Metrics: [COST_EXPLORER_METRIC],
+      GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }]
+    }))
+  ])
+
+  const serviceMap = new Map<string, number>()
+  let exactTotal = 0
+
+  for (const result of totalResp.ResultsByTime ?? []) {
+    exactTotal += readCostMetricAmount(result.Total)
+  }
+
+  for (const result of groupedResp.ResultsByTime ?? []) {
+    for (const group of result.Groups ?? []) {
+      const service = group.Keys?.[0] ?? 'Unknown'
+      const amount = readCostMetricAmount(group.Metrics)
+      serviceMap.set(service, (serviceMap.get(service) ?? 0) + amount)
+    }
+  }
+
+  const entries: CostBreakdownEntry[] = []
+
+  for (const [service, amount] of serviceMap) {
+    if (Math.abs(amount) > 0.001) {
+      entries.push({ service, amount: roundCurrency(amount) })
+    }
+  }
+
+  entries.sort((a, b) => b.amount - a.amount)
+
+  return { entries, total: roundCurrency(exactTotal), period: label }
 }
 
 async function getMonthlyCostForTag(
@@ -1178,7 +1240,7 @@ async function getMonthlyCostForTag(
       End: formatCostExplorerDate(end)
     },
     Granularity: 'MONTHLY',
-    Metrics: ['UnblendedCost'],
+    Metrics: [COST_EXPLORER_METRIC],
     Filter: {
       Tags: {
         Key: tagKey,
@@ -1190,10 +1252,10 @@ async function getMonthlyCostForTag(
 
   let total = 0
   for (const result of resp.ResultsByTime ?? []) {
-    total += parseFloat(result.Total?.UnblendedCost?.Amount ?? '0')
+    total += readCostMetricAmount(result.Total)
   }
 
-  return Math.round(total * 100) / 100
+  return roundCurrency(total)
 }
 
 /* ── public API ───────────────────────────────────────────── */
@@ -1202,6 +1264,10 @@ export async function getOverviewMetrics(
   connection: AwsConnection,
   regions: string[]
 ): Promise<OverviewMetrics> {
+  const monthlyCostPromise = fetchCurrentMonthCostBreakdown(connection)
+    .then((breakdown) => breakdown.total)
+    .catch(() => null)
+
   // Global services (not region-scoped) — query once using the first region
   const globalConn = { ...connection, region: regions[0] ?? connection.region }
   const [s3Global, r53Global, iamGlobal, ctGlobal] = await Promise.all([
@@ -1314,15 +1380,16 @@ export async function getOverviewMetrics(
   const regionCosts = regionResults.map((result) => result.cost)
 
   const totalResources = regionMetrics.reduce((s, r) => s + r.totalResources, 0)
-  const totalCost = regionCosts.reduce((s, r) => s + r.totalCost, 0)
+  const estimatedTotalCost = regionCosts.reduce((s, r) => s + r.totalCost, 0)
   const activeRegionCount = regionResults.filter((result) => result.isActive).length
+  const monthlyCost = await monthlyCostPromise
 
   return {
     regions: regionMetrics,
     costs: regionCosts,
     globalTotals: {
       totalResources,
-      totalCost,
+      totalCost: monthlyCost ?? estimatedTotalCost,
       regionCount: activeRegionCount
     }
   }
@@ -1330,42 +1397,10 @@ export async function getOverviewMetrics(
 
 /* ── Cost Explorer: real billing data ─────────────────────── */
 
-export async function getCostBreakdown(connection: AwsConnection): Promise<CostBreakdown> {
-  const client = new CostExplorerClient(awsClientConfig({ ...connection, region: 'us-east-1' }))
-  const { start, end, label } = getCurrentMonthTimePeriod()
-
-  const resp = await client.send(new GetCostAndUsageCommand({
-    TimePeriod: { Start: formatCostExplorerDate(start), End: formatCostExplorerDate(end) },
-    Granularity: 'MONTHLY',
-    Metrics: ['UnblendedCost'],
-    GroupBy: [{ Type: 'DIMENSION', Key: 'SERVICE' }],
-  }))
-
-  // Aggregate across all ResultsByTime entries
-  const serviceMap = new Map<string, number>()
-
-  for (const result of resp.ResultsByTime ?? []) {
-    for (const group of result.Groups ?? []) {
-      const service = group.Keys?.[0] ?? 'Unknown'
-      const amount = parseFloat(group.Metrics?.UnblendedCost?.Amount ?? '0')
-      serviceMap.set(service, (serviceMap.get(service) ?? 0) + amount)
-    }
-  }
-
-  const entries: CostBreakdownEntry[] = []
-  let total = 0
-
-  for (const [service, amount] of serviceMap) {
-    if (amount > 0.001) {
-      entries.push({ service, amount: Math.round(amount * 100) / 100 })
-      total += amount
-    }
-  }
-
-  entries.sort((a, b) => b.amount - a.amount)
-  total = Math.round(total * 100) / 100
-
-  return { entries, total, period: label }
+export async function getCostBreakdown(
+  connection: AwsConnection
+): Promise<CostBreakdown> {
+  return fetchCurrentMonthCostBreakdown(connection)
 }
 
 /* ── relationship-specific fetchers ───────────────────────── */

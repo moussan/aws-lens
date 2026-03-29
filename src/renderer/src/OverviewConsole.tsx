@@ -132,8 +132,12 @@ export function OverviewConsole({
     setGlobalLoading(true)
     setPageError('')
     try {
-      const result = await getOverviewMetrics(connectionState.connection, availableRegions)
-      setGlobalMetrics(result)
+      const [nextMetrics, nextCost] = await Promise.all([
+        getOverviewMetrics(connectionState.connection, availableRegions),
+        getCostBreakdown(connectionState.connection).catch(() => null)
+      ])
+      setGlobalMetrics(nextMetrics)
+      setCostBreakdown(nextCost)
     } catch (error) {
       setPageError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -181,6 +185,11 @@ export function OverviewConsole({
     if (tagResourceTypeFilter === 'all') return tagResults.resources
     return tagResults.resources.filter((resource) => resource.resourceType === tagResourceTypeFilter)
   }, [tagResults, tagResourceTypeFilter])
+
+  const displayedMonthlyCost = costBreakdown?.total ?? metrics?.globalTotals.totalCost ?? globalMetrics?.globalTotals.totalCost ?? 0
+  const displayedCostDetail = costBreakdown
+    ? `${costBreakdown.period} · Cost Explorer · Unblended cost`
+    : 'Estimated from resource heuristics'
 
   const content = (
     <>
@@ -234,7 +243,7 @@ export function OverviewConsole({
                     className="overview-service-chip"
                     style={{ cursor: 'default', borderColor: 'rgba(223, 105, 42, 0.2)' }}
                   >
-                    <span style={{ color: 'var(--accent)' }}>{fmtCurrency(costBreakdown?.total ?? globalMetrics.globalTotals.totalCost)}</span>
+                    <span style={{ color: 'var(--accent)' }}>{fmtCurrency(displayedMonthlyCost)}</span>
                     <strong>Cost</strong>
                   </button>
                   {SERVICE_TILES.map((tile) => {
@@ -255,6 +264,7 @@ export function OverviewConsole({
                 </div>
 
                 {/* ── Region breakdown panel ────────────────────── */}
+                <div className="hero-path" style={{ marginTop: '0.45rem' }}>{displayedCostDetail}</div>
                 {globalBreakdownService && (
                   <section className="panel stack" style={{ marginTop: '0.5rem' }}>
                     <div className="panel-header">
@@ -296,7 +306,7 @@ export function OverviewConsole({
                 <>
                   <section className="overview-tiles">
                     <div className="overview-tile highlight">
-                      <strong>{fmtCurrency(costBreakdown?.total ?? metrics.globalTotals.totalCost)}</strong>
+                      <strong>{fmtCurrency(displayedMonthlyCost)}</strong>
                       <span>Total Monthly Cost</span>
                     </div>
                     {SERVICE_TILES.map((tile) => {
@@ -336,8 +346,8 @@ export function OverviewConsole({
                   </section>
 
                   <div className="overview-bottom-row">
-                    Current month{costBreakdown ? ` (${costBreakdown.period})` : ''} total: <strong>{fmtCurrency(costBreakdown?.total ?? metrics.globalTotals.totalCost)} USD</strong>
-                    {costBreakdown && <span style={{ fontSize: '0.78rem', color: 'var(--muted)', marginLeft: '0.5rem' }}>(from Cost Explorer)</span>}
+                    Current month total: <strong>{fmtCurrency(displayedMonthlyCost)} USD</strong>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--muted)', marginLeft: '0.5rem' }}>({displayedCostDetail})</span>
                   </div>
 
                   <section className="workspace-grid">
@@ -600,7 +610,7 @@ export function OverviewConsole({
                   ...stat,
                   label: 'Monthly Cost',
                   value: fmtCurrency(costBreakdown.total),
-                  detail: `Current month (${costBreakdown.period}) from Cost Explorer`
+                  detail: `Current month (${costBreakdown.period}) from Cost Explorer using Unblended cost`
                 }
               }
 
