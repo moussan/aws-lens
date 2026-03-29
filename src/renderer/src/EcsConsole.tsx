@@ -127,6 +127,12 @@ export function EcsConsole({
   const [labLoading, setLabLoading] = useState(false)
   const [labError, setLabError] = useState('')
 
+  const selectedCluster = useMemo(
+    () => clusters.find((cluster) => cluster.clusterArn === selectedClusterArn) ?? null,
+    [clusters, selectedClusterArn]
+  )
+  const selectedClusterTarget = selectedCluster?.clusterName || selectedClusterArn
+
   const activeServiceCols = SERVICE_COLUMNS.filter((column) => visibleServiceCols.has(column.key))
   const activeTaskCols = TASK_COLUMNS.filter((column) => visibleTaskCols.has(column.key))
 
@@ -178,9 +184,14 @@ export function EcsConsole({
         return
       }
 
-      const nextServices = await listEcsServices(connection, resolvedCluster)
+      const resolvedClusterSummary = nextClusters.find((cluster) => cluster.clusterArn === resolvedCluster) ?? null
+      const resolvedClusterTarget = resolvedClusterSummary?.clusterName || resolvedCluster
+      const nextServices = await listEcsServices(connection, resolvedClusterTarget)
       setServices(nextServices)
-      const resolvedService = serviceName ?? selectedServiceName ?? nextServices[0]?.serviceName ?? ''
+      const requestedService = serviceName ?? selectedServiceName
+      const resolvedService = requestedService && nextServices.some((service) => service.serviceName === requestedService)
+        ? requestedService
+        : nextServices[0]?.serviceName ?? ''
       setSelectedServiceName(resolvedService)
 
       if (!resolvedService) {
@@ -190,7 +201,7 @@ export function EcsConsole({
         return
       }
 
-      const nextDiagnostics = await getEcsDiagnostics(connection, resolvedCluster, resolvedService)
+      const nextDiagnostics = await getEcsDiagnostics(connection, resolvedClusterTarget, resolvedService)
       setDiagnostics(nextDiagnostics)
       setLabReport(null)
       setLabError('')
@@ -260,11 +271,11 @@ export function EcsConsole({
   }, [connection, selectedLogTarget])
 
   async function loadLab() {
-    if (!selectedClusterArn || !selectedServiceName) return
+    if (!selectedClusterTarget || !selectedServiceName) return
     setLabLoading(true)
     setLabError('')
     try {
-      const report = await getEcsObservabilityReport(connection, selectedClusterArn, selectedServiceName)
+      const report = await getEcsObservabilityReport(connection, selectedClusterTarget, selectedServiceName)
       setLabReport(report)
     } catch (e) {
       setLabError(e instanceof Error ? e.message : 'Failed to load observability lab')
@@ -277,7 +288,7 @@ export function EcsConsole({
     if (mainTab !== 'lab' || !selectedServiceName) return
     if (labReport?.scope.kind === 'ecs' && labReport.scope.serviceName === selectedServiceName) return
     void loadLab()
-  }, [connection, labReport, mainTab, selectedClusterArn, selectedServiceName])
+  }, [connection, labReport, mainTab, selectedClusterTarget, selectedServiceName])
 
   async function selectService(serviceName: string) {
     setSelectedServiceName(serviceName)
@@ -286,7 +297,7 @@ export function EcsConsole({
     setLogs([])
     setLogStatus('')
     try {
-      const nextDiagnostics = await getEcsDiagnostics(connection, selectedClusterArn, serviceName)
+      const nextDiagnostics = await getEcsDiagnostics(connection, selectedClusterTarget, serviceName)
       setDiagnostics(nextDiagnostics)
       setDesiredCount(String(nextDiagnostics.service.desiredCount))
       const nextSelectedTaskArn = nextDiagnostics.taskRows[0]?.taskArn ?? ''
@@ -303,7 +314,7 @@ export function EcsConsole({
     setBusy(true)
     setMsg('')
     try {
-      await updateEcsDesiredCount(connection, selectedClusterArn, selectedServiceName, Number(desiredCount) || 0)
+      await updateEcsDesiredCount(connection, selectedClusterTarget, selectedServiceName, Number(desiredCount) || 0)
       setMsg('Desired count updated')
       await load(selectedClusterArn, selectedServiceName)
     } catch (e) {
@@ -317,7 +328,7 @@ export function EcsConsole({
     setBusy(true)
     setMsg('')
     try {
-      await forceEcsRedeploy(connection, selectedClusterArn, selectedServiceName)
+      await forceEcsRedeploy(connection, selectedClusterTarget, selectedServiceName)
       setMsg('Force redeploy initiated')
       await load(selectedClusterArn, selectedServiceName)
     } catch (e) {
@@ -331,7 +342,7 @@ export function EcsConsole({
     setBusy(true)
     setMsg('')
     try {
-      await stopEcsTask(connection, selectedClusterArn, taskArn)
+      await stopEcsTask(connection, selectedClusterTarget, taskArn)
       setMsg('Task stopped')
       await load(selectedClusterArn, selectedServiceName)
     } catch (e) {
@@ -452,7 +463,7 @@ export function EcsConsole({
         ))}
       </div>
 
-      {!diagnostics && !loading && (
+      {!diagnostics && !loading && services.length === 0 && (
         <div className="ecs-empty">Select a cluster and service to inspect deployment diagnostics.</div>
       )}
 
@@ -469,8 +480,8 @@ export function EcsConsole({
         </div>
       )}
 
-      {diagnostics && mainTab !== 'lab' && (
-        <div className="ecs-diagnostics-layout">
+      {mainTab !== 'lab' && (
+        <div className={`ecs-diagnostics-layout ${diagnostics ? '' : 'full-width'}`}>
           <div className="ecs-diagnostics-main">
             <div className="ecs-main-layout">
               <div className="ecs-table-area">
@@ -563,13 +574,15 @@ export function EcsConsole({
                         ))}
                       </tbody>
                     </table>
-                    {!filteredTasks.length && <div className="ecs-empty">No tasks match the current filters.</div>}
+                    {!diagnostics && <div className="ecs-empty">Select a service to load tasks and diagnostics.</div>}
+                    {diagnostics && !filteredTasks.length && <div className="ecs-empty">No tasks match the current filters.</div>}
                   </>
                 )}
               </div>
             </div>
 
-            <div className="ecs-panel-grid">
+            {diagnostics && (
+              <div className="ecs-panel-grid">
               <section className="ecs-panel">
                 <div className="ecs-panel-header">
                   <h3>Diagnostics Summary</h3>
@@ -611,17 +624,19 @@ export function EcsConsole({
                   ))}
                 </div>
               </section>
-            </div>
+              </div>
+            )}
           </div>
 
-          <aside className="ecs-sidebar">
+          {diagnostics && (
+            <aside className="ecs-sidebar">
             <div className="ecs-sidebar-section">
               <h3>Operator Actions</h3>
               <div className="ecs-actions-grid">
                 <ConfirmButton className="ecs-action-btn redeploy" type="button" disabled={busy} confirmLabel="Deploy now?" onConfirm={() => void doRedeploy()}>
                   Force Deployment
                 </ConfirmButton>
-                <button className="ecs-action-btn apply" type="button" disabled={!onRunTerminalCommand} onClick={() => onRunTerminalCommand?.(diagnosticsCommand(selectedClusterArn, selectedServiceName))}>
+                <button className="ecs-action-btn apply" type="button" disabled={!onRunTerminalCommand} onClick={() => onRunTerminalCommand?.(diagnosticsCommand(selectedClusterTarget, selectedServiceName))}>
                   Open Command
                 </button>
               </div>
@@ -781,7 +796,8 @@ export function EcsConsole({
                 <div className="ecs-empty">No recent service events.</div>
               )}
             </div>
-          </aside>
+            </aside>
+          )}
         </div>
       )}
     </div>

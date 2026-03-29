@@ -13,7 +13,10 @@ import type {
   SsmSendCommandRequest,
   SsmStartSessionRequest,
   SnapshotLaunchConfig,
-  TerraformCommandRequest
+  TerraformInputConfiguration,
+  TerraformCommandRequest,
+  TerraformInputValidationResult,
+  TerraformRunHistoryFilter
 } from '@shared/types'
 
 const terminalListenerMap = new Map<(event: unknown) => void, (...args: unknown[]) => void>()
@@ -583,29 +586,46 @@ const listenerMap = new Map<(event: unknown) => void, (...args: unknown[]) => vo
 const api = {
   detectCli: () => ipcRenderer.invoke('terraform:cli:detect'),
   getCliInfo: () => ipcRenderer.invoke('terraform:cli:info'),
-  listProjects: (profileName: string) => ipcRenderer.invoke('terraform:projects:list', profileName),
-  getProject: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:get', profileName, projectId),
-  getDrift: (profileName: string, projectId: string, connection: AwsConnection) =>
-    ipcRenderer.invoke('terraform:drift:get', profileName, projectId, connection),
+  listProjects: (profileName: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:list', profileName, connection),
+  getProject: (profileName: string, projectId: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:get', profileName, projectId, connection),
+  getDrift: (profileName: string, projectId: string, connection: AwsConnection, options?: { forceRefresh?: boolean }) =>
+    ipcRenderer.invoke('terraform:drift:get', profileName, projectId, connection, options),
   getObservabilityReport: (profileName: string, projectId: string, connection: AwsConnection) =>
     ipcRenderer.invoke('terraform:observability-report:get', profileName, projectId, connection),
   chooseProjectDirectory: () => ipcRenderer.invoke('terraform:projects:choose-directory'),
   chooseVarFile: () => ipcRenderer.invoke('terraform:projects:choose-file'),
-  addProject: (profileName: string, rootPath: string) => ipcRenderer.invoke('terraform:projects:add', profileName, rootPath),
+  addProject: (profileName: string, rootPath: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:add', profileName, rootPath, connection),
   renameProject: (profileName: string, projectId: string, name: string) => ipcRenderer.invoke('terraform:projects:rename', profileName, projectId, name),
+  openProjectInVsCode: (projectPath: string) => ipcRenderer.invoke('terraform:projects:open-vscode', projectPath),
   removeProject: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:remove', profileName, projectId),
-  reloadProject: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:reload', profileName, projectId),
+  reloadProject: (profileName: string, projectId: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:reload', profileName, projectId, connection),
+  selectWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:workspace:select', profileName, projectId, workspaceName, connection),
+  createWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:workspace:create', profileName, projectId, workspaceName, connection),
+  deleteWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:workspace:delete', profileName, projectId, workspaceName, connection),
   getSelectedProjectId: (profileName: string) => ipcRenderer.invoke('terraform:projects:selected:get', profileName),
   setSelectedProjectId: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:selected:set', profileName, projectId),
-  updateInputs: (profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) =>
-    ipcRenderer.invoke('terraform:inputs:update', profileName, projectId, inputs, varFile),
+  updateInputs: (profileName: string, projectId: string, inputConfig: TerraformInputConfiguration, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:inputs:update', profileName, projectId, inputConfig, connection),
   getMissingRequiredInputs: (profileName: string, projectId: string) =>
     ipcRenderer.invoke('terraform:inputs:missing-required', profileName, projectId),
+  validateProjectInputs: (profileName: string, projectId: string, connection?: AwsConnection): Promise<TerraformInputValidationResult> =>
+    ipcRenderer.invoke('terraform:inputs:validate', profileName, projectId, connection),
   listCommandLogs: (projectId: string) => ipcRenderer.invoke('terraform:logs:list', projectId),
   runCommand: (request: TerraformCommandRequest) => ipcRenderer.invoke('terraform:command:run', request),
   hasSavedPlan: (projectId: string) => ipcRenderer.invoke('terraform:plan:has-saved', projectId),
   clearSavedPlan: (projectId: string) => ipcRenderer.invoke('terraform:plan:clear', projectId),
   detectMissingVars: (output: string) => ipcRenderer.invoke('terraform:detect-missing-vars', output),
+  listRunHistory: (filter?: TerraformRunHistoryFilter) => ipcRenderer.invoke('terraform:history:list', filter),
+  getRunOutput: (runId: string) => ipcRenderer.invoke('terraform:history:get-output', runId),
+  deleteRunRecord: (runId: string) => ipcRenderer.invoke('terraform:history:delete', runId),
+  detectGovernanceTools: (tfCliPath?: string) => ipcRenderer.invoke('terraform:governance:detect-tools', tfCliPath),
+  getGovernanceToolkit: () => ipcRenderer.invoke('terraform:governance:toolkit'),
+  runGovernanceChecks: (profileName: string, projectId: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:governance:run-checks', profileName, projectId, connection),
+  getGovernanceReport: (projectId: string) => ipcRenderer.invoke('terraform:governance:get-report', projectId),
   subscribe: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload)
     listenerMap.set(listener, wrapped)

@@ -13,6 +13,8 @@ import type {
   SsmSendCommandRequest,
   SsmStartSessionRequest,
   SnapshotLaunchConfig,
+  TerraformInputConfiguration,
+  TerraformInputValidationResult,
   TerraformCommandRequest
 } from '@shared/types'
 
@@ -340,18 +342,22 @@ declare global {
       getIamCredentialReport: (c: AwsConnection) => Promise<unknown>
     }
     terraformWorkspace: {
-      listProjects: (profileName: string) => Promise<unknown>
-      getProject: (profileName: string, projectId: string) => Promise<unknown>
-      getDrift: (profileName: string, projectId: string, connection: AwsConnection) => Promise<unknown>
+      listProjects: (profileName: string, connection?: AwsConnection) => Promise<unknown>
+      getProject: (profileName: string, projectId: string, connection?: AwsConnection) => Promise<unknown>
+      getDrift: (profileName: string, projectId: string, connection: AwsConnection, options?: { forceRefresh?: boolean }) => Promise<unknown>
       getObservabilityReport: (profileName: string, projectId: string, connection: AwsConnection) => Promise<unknown>
       chooseProjectDirectory: () => Promise<unknown>
-      addProject: (profileName: string, rootPath: string) => Promise<unknown>
+      addProject: (profileName: string, rootPath: string, connection?: AwsConnection) => Promise<unknown>
       renameProject: (profileName: string, projectId: string, name: string) => Promise<unknown>
       removeProject: (profileName: string, projectId: string) => Promise<unknown>
-      reloadProject: (profileName: string, projectId: string) => Promise<unknown>
+      reloadProject: (profileName: string, projectId: string, connection?: AwsConnection) => Promise<unknown>
+      selectWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) => Promise<unknown>
+      createWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) => Promise<unknown>
+      deleteWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) => Promise<unknown>
       getSelectedProjectId: (profileName: string) => Promise<unknown>
       setSelectedProjectId: (profileName: string, projectId: string) => Promise<unknown>
-      updateInputs: (profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) => Promise<unknown>
+      updateInputs: (profileName: string, projectId: string, inputConfig: TerraformInputConfiguration, connection?: AwsConnection) => Promise<unknown>
+      validateProjectInputs: (profileName: string, projectId: string, connection?: AwsConnection) => Promise<TerraformInputValidationResult>
       listCommandLogs: (projectId: string) => Promise<unknown>
       runCommand: (request: TerraformCommandRequest) => Promise<unknown>
       subscribe: (listener: (event: unknown) => void) => void

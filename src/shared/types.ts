@@ -356,6 +356,7 @@ export type Ec2InstanceSummary = {
   ssmLastPingAt: string
   isTempInspectionInstance: boolean
   tempInspectionSourceVolumeId: string
+  tags?: Record<string, string>
 }
 
 export type Ec2InstanceDetail = {
@@ -560,6 +561,7 @@ export type LambdaFunctionSummary = {
   runtime: string
   memory: number | string
   lastModified: string
+  tags?: Record<string, string>
 }
 
 export type LambdaInvokeResult = {
@@ -607,6 +609,7 @@ export type EksClusterSummary = {
   version: string
   endpoint: string
   roleArn: string
+  tags?: Record<string, string>
 }
 
 export type EksClusterDetail = {
@@ -1224,6 +1227,7 @@ export type EcrRepositorySummary = {
   createdAt: string
   imageTagMutability: string
   scanOnPush: boolean
+  tags?: Record<string, string>
 }
 
 export type EcrImageSummary = {
@@ -1290,6 +1294,7 @@ export type S3BucketSummary = {
   name: string
   creationDate: string
   region: string
+  tags?: Record<string, string>
 }
 
 export type S3GovernanceSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
@@ -1406,6 +1411,7 @@ export type RdsInstanceSummary = {
   availabilityZone: string
   dbClusterIdentifier: string
   isAurora: boolean
+  tags?: Record<string, string>
 }
 
 export type RdsClusterNodeSummary = {
@@ -1432,6 +1438,7 @@ export type RdsClusterSummary = {
   storageEncrypted: boolean
   writerNodes: RdsClusterNodeSummary[]
   readerNodes: RdsClusterNodeSummary[]
+  tags?: Record<string, string>
 }
 
 export type RdsOperationalStatusTone = 'good' | 'neutral' | 'warning' | 'risk'
@@ -2227,6 +2234,10 @@ export type TerraformCommandName =
   | 'plan'
   | 'apply'
   | 'destroy'
+  | 'import'
+  | 'state-mv'
+  | 'state-rm'
+  | 'force-unlock'
   | 'state-list'
   | 'state-show'
   | 'state-pull'
@@ -2249,6 +2260,8 @@ export type TerraformVariableDefinition = {
 export type TerraformProjectMetadata = {
   terraformVersionConstraint: string
   backendType: string
+  backend: TerraformBackendDetails
+  git: TerraformProjectGitMetadata | null
   providerNames: string[]
   resourceCount: number
   moduleCount: number
@@ -2259,11 +2272,190 @@ export type TerraformProjectMetadata = {
   s3Backend: TerraformS3BackendConfig | null
 }
 
+export type TerraformBackendDetails =
+  | TerraformLocalBackendDetails
+  | TerraformS3BackendDetails
+  | TerraformGenericBackendDetails
+
+export type TerraformLocalBackendDetails = {
+  type: 'local'
+  label: string
+  stateLocation: string
+}
+
 export type TerraformS3BackendConfig = {
   bucket: string
   key: string
   region: string
   workspaceKeyPrefix: string
+}
+
+export type TerraformS3BackendDetails = TerraformS3BackendConfig & {
+  type: 's3'
+  label: string
+  effectiveStateKey: string
+}
+
+export type TerraformGenericBackendDetails = {
+  type: string
+  label: string
+  summary: string
+}
+
+export type TerraformGitStatus = 'ready' | 'not-repo' | 'git-missing' | 'error'
+
+export type TerraformGitChangedFile = {
+  path: string
+  status: string
+}
+
+export type TerraformGitCommitMetadata = {
+  repoRoot: string
+  branch: string
+  commitSha: string
+  shortCommitSha: string
+  isDetached: boolean
+  isDirty: boolean
+}
+
+export type TerraformProjectGitMetadata = TerraformGitCommitMetadata & {
+  status: TerraformGitStatus
+  projectRelativePath: string
+  changedTerraformFiles: TerraformGitChangedFile[]
+  error: string
+}
+
+export type TerraformSavedPlanMetadata = {
+  request: TerraformPlanOptionsSummary
+  generatedAt: string
+  git: TerraformGitCommitMetadata | null
+}
+
+export type TerraformWorkspaceSummary = {
+  name: string
+  isCurrent: boolean
+}
+
+export type TerraformStateBackupSummary = {
+  path: string
+  createdAt: string
+  sizeBytes: number
+  source: string
+}
+
+export type TerraformStateLockInfo = {
+  supported: boolean
+  backendType: string
+  lockId: string
+  operation: string
+  who: string
+  version: string
+  created: string
+  path: string
+  infoPath: string
+  message: string
+  canUnlock: boolean
+}
+
+export type TerraformProjectEnvironmentMetadata = {
+  environmentLabel: string
+  workspaceName: string
+  region: string
+  connectionLabel: string
+  backendType: string
+  varSetLabel: string
+}
+
+export type TerraformSecretSource = 'ssm-parameter' | 'secrets-manager'
+
+export type TerraformSecretReference = {
+  source: TerraformSecretSource
+  target: string
+  versionId: string
+  jsonKey: string
+  label: string
+}
+
+export type TerraformVariableLayer = {
+  varFile: string
+  variables: Record<string, unknown>
+  secretRefs: Record<string, TerraformSecretReference>
+}
+
+export type TerraformVariableSet = {
+  id: string
+  name: string
+  description: string
+  base: TerraformVariableLayer
+  overlays: Record<string, TerraformVariableLayer>
+  createdAt: string
+  updatedAt: string
+}
+
+export type TerraformInputConfiguration = {
+  selectedVariableSetId: string
+  selectedOverlay: string
+  variableSets: TerraformVariableSet[]
+  migratedFromLegacy: boolean
+}
+
+export type TerraformRuntimeInputSource =
+  | 'var-file'
+  | 'variable-set'
+  | 'environment-overlay'
+  | 'runtime-secret'
+  | 'default'
+  | 'unset'
+
+export type TerraformRuntimeInputStatus = 'ready' | 'missing' | 'unresolved-secret'
+
+export type TerraformUnresolvedSecret = {
+  name: string
+  reason: string
+}
+
+export type TerraformResolvedRuntimeInputs = {
+  values: Record<string, unknown>
+  sources: Record<string, TerraformRuntimeInputSource>
+  secretNames: string[]
+  missingRequired: string[]
+  unresolvedSecrets: TerraformUnresolvedSecret[]
+}
+
+export type TerraformInputValidationResult = {
+  valid: boolean
+  missing: string[]
+  unresolvedSecrets: TerraformUnresolvedSecret[]
+}
+
+export type TerraformProjectInputRow = {
+  name: string
+  description: string
+  required: boolean
+  hasDefault: boolean
+  effectiveSource: TerraformRuntimeInputSource
+  effectiveSourceLabel: string
+  effectiveValueSummary: string
+  localValueSummary: string
+  overlayValueSummary: string
+  inheritedFrom: string
+  secretRef: TerraformSecretReference | null
+  secretSourceLabel: string
+  status: TerraformRuntimeInputStatus
+  isSecret: boolean
+  isSensitive: boolean
+  isMissing: boolean
+}
+
+export type TerraformProjectInputsView = {
+  selectedVariableSetId: string
+  selectedVariableSetName: string
+  selectedOverlay: string
+  availableOverlays: string[]
+  rows: TerraformProjectInputRow[]
+  missingRequired: string[]
+  unresolvedSecrets: TerraformUnresolvedSecret[]
+  migratedFromLegacy: boolean
 }
 
 export type TerraformResourceInventoryItem = {
@@ -2277,19 +2469,93 @@ export type TerraformResourceInventoryItem = {
   values: Record<string, unknown>
 }
 
+export type TerraformPlanAction = 'create' | 'update' | 'delete' | 'replace' | 'no-op'
+
+export type TerraformPlanGroupKind = 'module' | 'action' | 'resource-type'
+
+export type TerraformPlanCounts = {
+  create: number
+  update: number
+  delete: number
+  replace: number
+  noop: number
+}
+
+export type TerraformPlanExecutionMode = 'standard' | 'refresh-only' | 'targeted' | 'replace'
+
+export type TerraformPlanOptions = {
+  mode?: TerraformPlanExecutionMode
+  targets?: string[]
+  replaceAddresses?: string[]
+}
+
+export type TerraformPlanOptionsSummary = {
+  mode: TerraformPlanExecutionMode
+  targets: string[]
+  replaceAddresses: string[]
+}
+
+export type TerraformPlanAttributeChange = {
+  path: string
+  changeType: 'add' | 'remove' | 'update' | 'unknown' | 'replace'
+  before: string
+  after: string
+  requiresReplacement: boolean
+  sensitive: boolean
+  heuristic: boolean
+}
+
 export type TerraformPlanChange = {
   address: string
   type: string
   name: string
   modulePath: string
   provider: string
+  providerDisplayName: string
+  service: string
   actions: string[]
-  actionLabel: string
+  actionLabel: TerraformPlanAction
+  mode: 'managed' | 'data'
+  actionReason: string
+  replacePaths: string[]
+  changedAttributes: TerraformPlanAttributeChange[]
+  beforeIdentity: string
+  afterIdentity: string
+  isDestructive: boolean
+  isReplacement: boolean
+}
+
+export type TerraformPlanGroup = {
+  key: string
+  label: string
+  kind: TerraformPlanGroupKind
+  count: number
+  summary: TerraformPlanCounts
+  resources: string[]
+}
+
+export type TerraformPlanSummary = TerraformPlanCounts & {
+  hasChanges: boolean
+  affectedResources: number
+  affectedModules: string[]
+  affectedProviders: string[]
+  affectedServices: string[]
+  groups: {
+    byModule: TerraformPlanGroup[]
+    byAction: TerraformPlanGroup[]
+    byResourceType: TerraformPlanGroup[]
+  }
+  jsonFieldsUsed: string[]
+  heuristicNotes: string[]
+  hasDestructiveChanges: boolean
+  hasReplacementChanges: boolean
+  isDeleteHeavy: boolean
+  request: TerraformPlanOptionsSummary
 }
 
 export type TerraformActionRow = {
   order: number
-  action: string
+  action: TerraformPlanAction
   address: string
   resourceType: string
   physicalResourceId: string
@@ -2334,6 +2600,84 @@ export type TerraformCommandLog = {
   output: string
 }
 
+export type TerraformRunRecord = {
+  id: string
+  projectId: string
+  projectName: string
+  command: TerraformCommandName
+  args: string[]
+  workspace: string
+  region: string
+  connectionLabel: string
+  backendType: string
+  stateSource: string
+  startedAt: string
+  finishedAt: string | null
+  exitCode: number | null
+  success: boolean | null
+  planSummary: TerraformPlanSummary | null
+  planJsonPath: string
+  backupPath: string
+  backupCreatedAt: string
+  stateOperationSummary: string
+  git: TerraformGitCommitMetadata | null
+}
+
+export type TerraformRunHistoryFilter = {
+  projectId?: string
+  command?: TerraformCommandName
+  success?: boolean
+}
+
+/* ── Governance & Safety Checks ────────────────────────────── */
+
+export type TerraformGovernanceToolId = 'fmt' | 'validate' | 'tflint' | 'tfsec' | 'checkov'
+
+export type TerraformGovernanceToolInfo = {
+  id: TerraformGovernanceToolId
+  label: string
+  available: boolean
+  path: string
+  version: string
+  required: boolean
+}
+
+export type TerraformGovernanceCheckStatus = 'passed' | 'failed' | 'skipped' | 'error'
+
+export type TerraformGovernanceCheckResult = {
+  toolId: TerraformGovernanceToolId
+  label: string
+  status: TerraformGovernanceCheckStatus
+  blocking: boolean
+  summary: string
+  findings: TerraformGovernanceFinding[]
+  output: string
+  durationMs: number
+  ranAt: string
+}
+
+export type TerraformGovernanceFinding = {
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
+  ruleId: string
+  message: string
+  file: string
+  line: number
+}
+
+export type TerraformGovernanceSeverity = TerraformGovernanceFinding['severity']
+
+export type TerraformGovernanceReport = {
+  projectId: string
+  checks: TerraformGovernanceCheckResult[]
+  ranAt: string
+  allBlockingPassed: boolean
+}
+
+export type TerraformGovernanceToolkit = {
+  tools: TerraformGovernanceToolInfo[]
+  detectedAt: string
+}
+
 export type TerraformProjectStatus = 'Ready' | 'Missing'
 
 export type TerraformDriftStatus =
@@ -2343,6 +2687,46 @@ export type TerraformDriftStatus =
   | 'unmanaged_in_aws'
   | 'unsupported'
 
+export type TerraformDriftAssessment = 'verified' | 'inferred' | 'unsupported'
+
+export type TerraformDriftDifferenceKind = 'attribute' | 'tag' | 'heuristic'
+
+export type TerraformDriftDifference = {
+  key: string
+  label: string
+  kind: TerraformDriftDifferenceKind
+  assessment: Exclude<TerraformDriftAssessment, 'unsupported'>
+  terraformValue: string
+  liveValue: string
+}
+
+export type TerraformDriftCoverageLevel = 'verified' | 'partial'
+
+export type TerraformDriftCoverageItem = {
+  resourceType: string
+  coverage: TerraformDriftCoverageLevel
+  verifiedChecks: string[]
+  inferredChecks: string[]
+  notes: string[]
+}
+
+export type TerraformDriftTrend = 'improving' | 'worsening' | 'unchanged' | 'insufficient_history'
+
+export type TerraformDriftSnapshot = {
+  id: string
+  scannedAt: string
+  trigger: 'manual' | 'initial'
+  summary: TerraformDriftSummary
+  items: TerraformDriftItem[]
+}
+
+export type TerraformDriftHistory = {
+  snapshots: TerraformDriftSnapshot[]
+  trend: TerraformDriftTrend
+  latestScanAt: string
+  previousScanAt: string
+}
+
 export type TerraformDriftItem = {
   terraformAddress: string
   resourceType: string
@@ -2350,10 +2734,14 @@ export type TerraformDriftItem = {
   cloudIdentifier: string
   region: string
   status: TerraformDriftStatus
+  assessment: TerraformDriftAssessment
   explanation: string
   suggestedNextStep: string
   consoleUrl: string
   terminalCommand: string
+  differences: TerraformDriftDifference[]
+  evidence: string[]
+  relatedTerraformAddresses: string[]
 }
 
 export type TerraformDriftSummary = {
@@ -2361,6 +2749,10 @@ export type TerraformDriftSummary = {
   statusCounts: Record<TerraformDriftStatus, number>
   resourceTypeCounts: Array<{ resourceType: string; count: number }>
   scannedAt: string
+  verifiedCount: number
+  inferredCount: number
+  unsupportedResourceTypes: string[]
+  supportedResourceTypes: TerraformDriftCoverageItem[]
 }
 
 export type TerraformDriftReport = {
@@ -2370,6 +2762,8 @@ export type TerraformDriftReport = {
   region: string
   summary: TerraformDriftSummary
   items: TerraformDriftItem[]
+  history: TerraformDriftHistory
+  fromCache: boolean
 }
 
 export type TerraformProject = {
@@ -2378,28 +2772,32 @@ export type TerraformProject = {
   rootPath: string
   varFile: string
   variables: Record<string, unknown>
+  inputConfig: TerraformInputConfiguration
+  inputView: TerraformProjectInputsView
+  inputValidation: TerraformInputValidationResult
+  environment: TerraformProjectEnvironmentMetadata
   status: TerraformProjectStatus
   inputsFilePath: string
   detectedVariables: TerraformVariableDefinition[]
   inputs: Record<string, unknown>
   metadata: TerraformProjectMetadata
+  workspaces: TerraformWorkspaceSummary[]
+  currentWorkspace: string
   inventory: TerraformResourceInventoryItem[]
   planChanges: TerraformPlanChange[]
   actionRows: TerraformActionRow[]
   resourceRows: TerraformResourceRow[]
   diagram: TerraformDiagram
-  lastPlanSummary: {
-    create: number
-    update: number
-    delete: number
-    replace: number
-    noop: number
-  }
+  lastPlanSummary: TerraformPlanSummary
   lastCommandAt: string
   stateAddresses: string[]
   rawStateJson: string
   stateSource: string
+  stateBackups: TerraformStateBackupSummary[]
+  latestStateBackup: TerraformStateBackupSummary | null
+  stateLockInfo: TerraformStateLockInfo | null
   hasSavedPlan: boolean
+  savedPlanMetadata: TerraformSavedPlanMetadata | null
 }
 
 export type TerraformCommandRequest = {
@@ -2408,11 +2806,17 @@ export type TerraformCommandRequest = {
   projectId: string
   command: TerraformCommandName
   stateAddress?: string
+  importAddress?: string
+  importId?: string
+  stateFromAddress?: string
+  stateToAddress?: string
+  lockId?: string
+  planOptions?: TerraformPlanOptions
 }
 
 export type TerraformProjectListItem = Pick<
   TerraformProject,
-  'id' | 'name' | 'rootPath' | 'status' | 'stateSource' | 'metadata' | 'lastPlanSummary' | 'lastCommandAt' | 'inventory'
+  'id' | 'name' | 'rootPath' | 'status' | 'stateSource' | 'metadata' | 'lastPlanSummary' | 'lastCommandAt' | 'inventory' | 'environment' | 'currentWorkspace'
 >
 
 export type TerraformProgressEvent = {

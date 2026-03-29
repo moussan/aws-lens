@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './terraform.css'
 
 import type {
@@ -9,16 +9,29 @@ import type {
   TerraformActionRow,
   TerraformCliInfo,
   TerraformCommandLog,
+  TerraformCommandName,
   TerraformDriftItem,
   TerraformDriftReport,
   TerraformDriftStatus,
   TerraformDiagram,
   TerraformGraphEdge,
   TerraformGraphNode,
+  TerraformGovernanceCheckResult,
+  TerraformGovernanceReport,
+  TerraformGovernanceToolkit,
+  TerraformInputConfiguration,
+  TerraformPlanAction,
   TerraformPlanChange,
+  TerraformPlanGroup,
+  TerraformPlanOptions,
   TerraformProject,
   TerraformProjectListItem,
-  TerraformResourceRow
+  TerraformResourceRow,
+  TerraformRunRecord,
+  TerraformSecretReference,
+  TerraformVariableLayer,
+  TerraformVariableSet,
+  TerraformWorkspaceSummary
 } from '@shared/types'
 import { openExternalUrl } from './api'
 import {
@@ -26,24 +39,35 @@ import {
   chooseProjectDirectory,
   chooseVarFile,
   clearSavedPlan,
+  createWorkspace,
+  deleteRunRecord,
   detectCli,
+  detectGovernanceTools,
   detectMissingVars,
+  deleteWorkspace,
   getDrift,
+  getGovernanceReport,
   getObservabilityReport,
   getProject,
-  getMissingRequiredInputs,
+  getRunOutput,
   listProjects,
+  listRunHistory,
+  openProjectInVsCode,
   reloadProject,
   removeProject,
+  renameProject,
   runCommand,
+  runGovernanceChecks,
+  selectWorkspace,
   setSelectedProjectId,
   subscribe,
   unsubscribe,
-  updateInputs
+  updateInputs,
+  validateProjectInputs
 } from './terraformApi'
 import { ObservabilityResilienceLab } from './ObservabilityResilienceLab'
 
-type DetailTab = 'actions' | 'resources' | 'drift' | 'lab'
+type DetailTab = 'actions' | 'state' | 'resources' | 'drift' | 'lab' | 'history'
 
 /* ── db_password validation ───────────────────────────────── */
 
@@ -56,42 +80,129 @@ function validateDbPassword(val: unknown): string | null {
   return null
 }
 
-function validateVariablesJson(text: string): { parsed: Record<string, unknown> | null; error: string } {
-  if (!text.trim()) return { parsed: {}, error: '' }
+function parseVariableValue(text: string): { parsed: unknown; error: string } {
+  if (!text.trim()) return { parsed: '', error: '' }
   try {
-    const obj = JSON.parse(text)
-    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return { parsed: null, error: 'Root must be a JSON object' }
-    if ('db_password' in obj) {
-      const pwErr = validateDbPassword(obj.db_password)
+    const parsed = JSON.parse(text)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && 'db_password' in parsed) {
+      const pwErr = validateDbPassword((parsed as Record<string, unknown>).db_password)
       if (pwErr) return { parsed: null, error: pwErr }
     }
-    return { parsed: obj as Record<string, unknown>, error: '' }
+    return { parsed, error: '' }
   } catch (err) {
-    return { parsed: null, error: err instanceof Error ? err.message : 'Invalid JSON' }
+    const trimmed = text.trim()
+    if (trimmed === 'true') return { parsed: true, error: '' }
+    if (trimmed === 'false') return { parsed: false, error: '' }
+    if (trimmed === 'null') return { parsed: null, error: '' }
+    if (/^-?\d+(\.\d+)?$/.test(trimmed)) return { parsed: Number(trimmed), error: '' }
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      return { parsed: null, error: err instanceof Error ? err.message : 'Invalid JSON' }
+    }
+    if (trimmed === '') return { parsed: '', error: '' }
+    if (trimmed === '""') return { parsed: '', error: '' }
+    if (trimmed === "''") return { parsed: '', error: '' }
+    if (trimmed === 'db_password') {
+      return { parsed: trimmed, error: '' }
+    }
+    return { parsed: text, error: '' }
   }
+}
+
+function formatVariableValue(value: unknown): string {
+  if (value === undefined) return ''
+  if (typeof value === 'string') return value
+  return JSON.stringify(value)
+}
+
+function cloneInputConfig(config: TerraformInputConfiguration): TerraformInputConfiguration {
+  return JSON.parse(JSON.stringify(config)) as TerraformInputConfiguration
+}
+
+function emptyVariableLayer(): TerraformVariableLayer {
+  return { varFile: '', variables: {}, secretRefs: {} }
+}
+
+function ensureVariableSet(config: TerraformInputConfiguration): TerraformVariableSet {
+  return config.variableSets.find((item) => item.id === config.selectedVariableSetId) ?? config.variableSets[0]
+}
+
+function ensureOverlayLayer(config: TerraformInputConfiguration, variableSet: TerraformVariableSet): TerraformVariableLayer {
+  if (!config.selectedOverlay) return emptyVariableLayer()
+  if (!variableSet.overlays[config.selectedOverlay]) {
+    variableSet.overlays[config.selectedOverlay] = emptyVariableLayer()
+  }
+  return variableSet.overlays[config.selectedOverlay]
+}
+
+function variableLayerMode(layer: TerraformVariableLayer, name: string): 'inherit' | 'value' | 'ssm' | 'secret' {
+  if (layer.secretRefs[name]) {
+    return layer.secretRefs[name].source === 'ssm-parameter' ? 'ssm' : 'secret'
+  }
+  if (Object.prototype.hasOwnProperty.call(layer.variables, name)) {
+    return 'value'
+  }
+  return 'inherit'
 }
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))]
 }
 
-function terraformContextKey(connection: AwsConnection): string {
-  return connection.kind === 'profile'
-    ? `profile:${connection.profile}`
-    : `assumed-role:${connection.sessionId}`
-}
-
-function parsePlanSummaryFromOutput(output: string): TerraformProject['lastPlanSummary'] | null {
-  const match = output.match(/Plan:\s*(\d+)\s+to add,\s*(\d+)\s+to change,\s*(\d+)\s+to destroy\./i)
-  if (!match) return null
-  return {
-    create: Number(match[1] ?? 0),
-    update: Number(match[2] ?? 0),
-    delete: Number(match[3] ?? 0),
-    replace: 0,
-    noop: 0
+function formatIsoDate(iso: string): string {
+  if (!iso) return '-'
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+  } catch {
+    return iso
   }
 }
+
+function formatGitHead(branch: string, shortCommitSha: string, isDetached: boolean): string {
+  if (!shortCommitSha) return '-'
+  return isDetached ? `${shortCommitSha} (detached HEAD)` : `${branch || '-'} @ ${shortCommitSha}`
+}
+
+function gitStatusSummary(project: TerraformProject): string {
+  const git = project.metadata.git
+  if (!git) return '-'
+  if (git.status === 'ready') {
+    return `${formatGitHead(git.branch, git.shortCommitSha, git.isDetached)}${git.isDirty ? ' • dirty' : ' • clean'}`
+  }
+  return git.error || 'Git metadata unavailable.'
+}
+
+function planCommitMismatchWarning(project: TerraformProject): string {
+  const currentGit = project.metadata.git
+  const plannedGit = project.savedPlanMetadata?.git
+  if (!currentGit || currentGit.status !== 'ready' || !plannedGit?.commitSha) return ''
+  if (currentGit.commitSha === plannedGit.commitSha) return ''
+  return `Saved plan was generated from ${plannedGit.shortCommitSha} but the current checkout is ${currentGit.shortCommitSha}. Review the diff before applying; Terraform will still use the saved plan artifact from the older commit.`
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+  function terraformContextKey(connection: AwsConnection): string {
+    return connection.kind === 'profile'
+      ? `profile:${connection.profile}`
+      : `assumed-role:${connection.sessionId}`
+  }
+
+  function connectionForProject(connection: AwsConnection, project: TerraformProject | null): AwsConnection {
+    const region = project?.environment.region || connection.region
+    return region === connection.region ? connection : { ...connection, region }
+  }
 
 /* ── Inputs Dialog ────────────────────────────────────────── */
 
@@ -102,66 +213,523 @@ function InputsDialog({
   prefillMissing
 }: {
   project: TerraformProject
-  onSave: (variables: Record<string, unknown>, varFile: string) => void
+  onSave: (inputConfig: TerraformInputConfiguration) => void
   onClose: () => void
   prefillMissing?: string[]
 }) {
-  const [varFile, setVarFile] = useState(project.varFile ?? '')
-  const [jsonText, setJsonText] = useState(() => {
-    const vars = { ...(project.variables ?? {}) }
-    if (prefillMissing) {
-      for (const name of prefillMissing) {
-        if (!(name in vars)) vars[name] = ''
-      }
-    }
-    return Object.keys(vars).length > 0 ? JSON.stringify(vars, null, 2) : ''
-  })
+  const [config, setConfig] = useState(() => cloneInputConfig(project.inputConfig))
   const [validationError, setValidationError] = useState('')
+  const variableSet = ensureVariableSet(config)
+  const overlayLayer = ensureOverlayLayer(config, variableSet)
+  const overlayOptions = uniqueStrings(['', ...project.inputView.availableOverlays, config.selectedOverlay]).sort((a, b) => a.localeCompare(b))
+  const missingNames = useMemo(() => new Set(uniqueStrings([
+    ...project.inputView.missingRequired,
+    ...(prefillMissing ?? [])
+  ])), [project.inputView.missingRequired, prefillMissing])
+  const variableNames = useMemo(() => uniqueStrings([
+    ...project.inputView.rows.map((row) => row.name),
+    ...(prefillMissing ?? [])
+  ]).sort((a, b) => {
+    const aMissing = missingNames.has(a)
+    const bMissing = missingNames.has(b)
+    if (aMissing !== bMissing) return aMissing ? -1 : 1
+    return a.localeCompare(b)
+  }), [missingNames, project.inputView.rows, prefillMissing])
 
-  async function handleBrowse() {
+  async function handleBrowse(target: 'base' | 'overlay') {
     const chosen = await chooseVarFile()
-    if (chosen) setVarFile(chosen)
+    if (!chosen) return
+    setConfig((current) => {
+      const next = cloneInputConfig(current)
+      const nextSet = ensureVariableSet(next)
+      const layer = target === 'base' ? nextSet.base : ensureOverlayLayer(next, nextSet)
+      layer.varFile = chosen
+      return next
+    })
   }
 
   function handleSave() {
-    const { parsed, error } = validateVariablesJson(jsonText)
-    if (error) { setValidationError(error); return }
+    const next = cloneInputConfig(config)
+    const selectedSet = ensureVariableSet(next)
+    const selectedOverlayLayer = ensureOverlayLayer(next, selectedSet)
+
+    if (!selectedSet.name.trim()) {
+      setValidationError('Variable set name is required.')
+      return
+    }
+
+    for (const name of variableNames) {
+      for (const [layerLabel, layer] of [['base', selectedSet.base], ['overlay', selectedOverlayLayer]] as const) {
+        if (Object.prototype.hasOwnProperty.call(layer.variables, name) && name === 'db_password') {
+          const pwErr = validateDbPassword(layer.variables[name])
+          if (pwErr) {
+            setValidationError(`${layerLabel} ${name}: ${pwErr}`)
+            return
+          }
+        }
+        if (layer.secretRefs[name] && !layer.secretRefs[name].target.trim()) {
+          setValidationError(`${layerLabel} ${name}: secret target is required.`)
+          return
+        }
+      }
+    }
+
     setValidationError('')
-    onSave(parsed ?? {}, varFile)
+    onSave(next)
+  }
+
+  function updateConfig(mutator: (draft: TerraformInputConfiguration) => void) {
+    setConfig((current) => {
+      const next = cloneInputConfig(current)
+      mutator(next)
+      return next
+    })
+  }
+
+  function updateLayerEntry(
+    target: 'base' | 'overlay',
+    name: string,
+    mode: 'inherit' | 'value' | 'ssm' | 'secret',
+    rawValue = ''
+  ) {
+    updateConfig((next) => {
+      const nextSet = ensureVariableSet(next)
+      const layer = target === 'base' ? nextSet.base : ensureOverlayLayer(next, nextSet)
+      delete layer.variables[name]
+      delete layer.secretRefs[name]
+
+      if (mode === 'value') {
+        const parsed = parseVariableValue(rawValue)
+        if (!parsed.error) {
+          layer.variables[name] = parsed.parsed
+        }
+        return
+      }
+
+      if (mode === 'ssm' || mode === 'secret') {
+        layer.secretRefs[name] = {
+          source: mode === 'ssm' ? 'ssm-parameter' : 'secrets-manager',
+          target: rawValue,
+          versionId: '',
+          jsonKey: '',
+          label: ''
+        }
+      }
+    })
+  }
+
+  function updateSecretReferenceField(target: 'base' | 'overlay', name: string, field: keyof TerraformSecretReference, value: string) {
+    updateConfig((next) => {
+      const nextSet = ensureVariableSet(next)
+      const layer = target === 'base' ? nextSet.base : ensureOverlayLayer(next, nextSet)
+      const current = layer.secretRefs[name]
+      if (!current) return
+      layer.secretRefs[name] = { ...current, [field]: value }
+    })
+  }
+
+  function renderLayerEditor(target: 'base' | 'overlay', name: string) {
+    const layer = target === 'base' ? variableSet.base : overlayLayer
+    const mode = variableLayerMode(layer, name)
+    const localValue = Object.prototype.hasOwnProperty.call(layer.variables, name) ? formatVariableValue(layer.variables[name]) : ''
+    const secretRef = layer.secretRefs[name]
+
+    return (
+      <div className="tf-input-cell">
+        <select
+          value={mode}
+          onChange={(e) => updateLayerEntry(target, name, e.target.value as 'inherit' | 'value' | 'ssm' | 'secret', mode === 'value' ? localValue : secretRef?.target ?? '')}
+        >
+          <option value="inherit">Inherit</option>
+          <option value="value">Local value</option>
+          <option value="ssm">SSM ref</option>
+          <option value="secret">Secret ref</option>
+        </select>
+        {mode === 'value' && (
+          <textarea
+            value={localValue}
+            onChange={(e) => {
+              const parsed = parseVariableValue(e.target.value)
+              if (parsed.error) {
+                setValidationError(`${name}: ${parsed.error}`)
+                return
+              }
+              setValidationError('')
+              updateLayerEntry(target, name, 'value', e.target.value)
+            }}
+            placeholder='string, 123, true, {"json":"object"}'
+          />
+        )}
+        {(mode === 'ssm' || mode === 'secret') && secretRef && (
+          <div className="tf-secret-ref-fields">
+            <input
+              value={secretRef.target}
+              onChange={(e) => updateSecretReferenceField(target, name, 'target', e.target.value)}
+              placeholder={mode === 'ssm' ? '/path/to/parameter' : 'secret-id-or-arn'}
+            />
+            <div className="tf-secret-ref-grid">
+              <input
+                value={secretRef.jsonKey}
+                onChange={(e) => updateSecretReferenceField(target, name, 'jsonKey', e.target.value)}
+                placeholder="JSON key (optional)"
+              />
+              <input
+                value={secretRef.versionId}
+                onChange={(e) => updateSecretReferenceField(target, name, 'versionId', e.target.value)}
+                placeholder={mode === 'secret' ? 'Version ID (optional)' : 'Label (optional)'}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  function renderQuickMissingEntry(name: string) {
+    const writeTarget: 'base' | 'overlay' = config.selectedOverlay ? 'overlay' : 'base'
+    const layer = writeTarget === 'base' ? variableSet.base : overlayLayer
+    const mode = variableLayerMode(layer, name)
+    const localValue = Object.prototype.hasOwnProperty.call(layer.variables, name) ? formatVariableValue(layer.variables[name]) : ''
+    const secretRef = layer.secretRefs[name]
+
+    return (
+      <div key={name} className="tf-missing-entry-card">
+        <div className="tf-missing-entry-head">
+          <div>
+            <strong>{name}</strong>
+            <div className="tf-input-effective-note">
+              Writing to {writeTarget === 'overlay' ? `overlay (${config.selectedOverlay})` : `base (${variableSet.name})`}
+            </div>
+          </div>
+          <span className="tf-input-badge required">Missing</span>
+        </div>
+        <div className="tf-missing-entry-controls">
+          <select
+            value={mode === 'inherit' ? 'value' : mode}
+            onChange={(e) => updateLayerEntry(writeTarget, name, e.target.value as 'value' | 'ssm' | 'secret', mode === 'value' ? localValue : secretRef?.target ?? '')}
+          >
+            <option value="value">Local value</option>
+            <option value="ssm">SSM ref</option>
+            <option value="secret">Secret ref</option>
+          </select>
+          {mode === 'ssm' || mode === 'secret' ? (
+            <input
+              value={secretRef?.target ?? ''}
+              onChange={(e) => {
+                if (mode !== 'ssm' && mode !== 'secret') return
+                if (!secretRef) {
+                  updateLayerEntry(writeTarget, name, mode, e.target.value)
+                  return
+                }
+                updateSecretReferenceField(writeTarget, name, 'target', e.target.value)
+              }}
+              placeholder={mode === 'ssm' ? '/path/to/parameter' : 'secret-id-or-arn'}
+            />
+          ) : (
+            <input
+              value={localValue}
+              onChange={(e) => {
+                const parsed = parseVariableValue(e.target.value)
+                if (parsed.error) {
+                  setValidationError(`${name}: ${parsed.error}`)
+                  return
+                }
+                setValidationError('')
+                updateLayerEntry(writeTarget, name, 'value', e.target.value)
+              }}
+              placeholder="Enter required value"
+            />
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function draftEffectiveInfo(name: string): { source: string; value: string; note: string } {
+    const overlaySecret = overlayLayer.secretRefs[name]
+    const baseSecret = variableSet.base.secretRefs[name]
+    if (overlaySecret) {
+      return {
+        source: `Overlay secret (${config.selectedOverlay || 'selected'})`,
+        value: overlaySecret.target || 'Secret reference',
+        note: overlaySecret.source === 'ssm-parameter' ? 'Resolved from SSM at runtime' : 'Resolved from Secrets Manager at runtime'
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(overlayLayer.variables, name)) {
+      return {
+        source: `Overlay local (${config.selectedOverlay || 'selected'})`,
+        value: formatVariableValue(overlayLayer.variables[name]),
+        note: ''
+      }
+    }
+    if (baseSecret) {
+      return {
+        source: `Variable set secret (${variableSet.name})`,
+        value: baseSecret.target || 'Secret reference',
+        note: baseSecret.source === 'ssm-parameter' ? 'Resolved from SSM at runtime' : 'Resolved from Secrets Manager at runtime'
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(variableSet.base.variables, name)) {
+      return {
+        source: `Variable set local (${variableSet.name})`,
+        value: formatVariableValue(variableSet.base.variables[name]),
+        note: ''
+      }
+    }
+    const existing = project.inputView.rows.find((item) => item.name === name)
+    return {
+      source: existing?.effectiveSourceLabel ?? 'Missing',
+      value: existing?.effectiveValueSummary ?? '-',
+      note: existing?.secretSourceLabel ?? existing?.inheritedFrom ?? ''
+    }
+  }
+
+  function handleCreateVariableSet() {
+    updateConfig((next) => {
+      const id = `set-${Date.now()}`
+      next.variableSets.push({
+        id,
+        name: `Variable Set ${next.variableSets.length + 1}`,
+        description: '',
+        base: emptyVariableLayer(),
+        overlays: {},
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      })
+      next.selectedVariableSetId = id
+    })
+  }
+
+  return (
+    <div className="tf-inputs-overlay" onClick={onClose}>
+      <div className="tf-inputs-dialog tf-inputs-dialog-wide" onClick={(e) => e.stopPropagation()}>
+        <h3>Inputs for {project.name}</h3>
+        <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
+          Base values stay local, overlays override by environment, and AWS secret refs resolve only at runtime.
+        </p>
+        {project.inputView.migratedFromLegacy && (
+          <p className="tf-inputs-migration-note">
+            Existing var file + JSON inputs were migrated into the selected variable set base layer.
+          </p>
+        )}
+        {prefillMissing && prefillMissing.length > 0 && (
+          <p className="tf-inputs-warning">
+            Required now: {uniqueStrings(prefillMissing).join(', ')}
+          </p>
+        )}
+        {missingNames.size > 0 && (
+          <div className="tf-missing-entry-panel">
+            <div className="tf-missing-entry-title">Missing Required Inputs</div>
+            <div className="tf-missing-entry-list">
+              {[...missingNames].sort((a, b) => a.localeCompare(b)).map((name) => renderQuickMissingEntry(name))}
+            </div>
+          </div>
+        )}
+        <div className="tf-inputs-toolbar">
+          <label>
+            Variable Set
+            <div className="tf-inline-field">
+              <select value={config.selectedVariableSetId} onChange={(e) => updateConfig((next) => { next.selectedVariableSetId = e.target.value })}>
+                {config.variableSets.map((item) => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+              <button type="button" className="tf-toolbar-btn" onClick={handleCreateVariableSet}>New Set</button>
+            </div>
+          </label>
+          <label>
+            Set Name
+            <input value={variableSet.name} onChange={(e) => updateConfig((next) => { ensureVariableSet(next).name = e.target.value })} />
+          </label>
+          <label>
+            Environment Overlay
+            <div className="tf-inline-field">
+              <select value={config.selectedOverlay} onChange={(e) => updateConfig((next) => { next.selectedOverlay = e.target.value })}>
+                <option value="">None</option>
+                {overlayOptions.filter(Boolean).map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+              <input value={config.selectedOverlay} onChange={(e) => updateConfig((next) => { next.selectedOverlay = e.target.value.trim() })} placeholder="dev / stage / prod" />
+            </div>
+          </label>
+        </div>
+        <div className="tf-inputs-layout">
+          <label>
+            Base Var File
+            <div className="tf-inline-field">
+              <input value={variableSet.base.varFile} onChange={(e) => updateConfig((next) => { ensureVariableSet(next).base.varFile = e.target.value })} placeholder="terraform.tfvars" />
+              <button type="button" className="tf-toolbar-btn" onClick={() => void handleBrowse('base')}>Browse</button>
+            </div>
+          </label>
+          <label>
+            Overlay Var File
+            <div className="tf-inline-field">
+              <input value={overlayLayer.varFile} onChange={(e) => updateConfig((next) => { ensureOverlayLayer(next, ensureVariableSet(next)).varFile = e.target.value })} placeholder="env/dev.tfvars" />
+              <button type="button" className="tf-toolbar-btn" onClick={() => void handleBrowse('overlay')} disabled={!config.selectedOverlay}>Browse</button>
+            </div>
+          </label>
+        </div>
+        <div className="tf-input-grid">
+          <div className="tf-input-grid-head">Variable</div>
+          <div className="tf-input-grid-head">Base</div>
+          <div className="tf-input-grid-head">Overlay</div>
+          <div className="tf-input-grid-head">Effective</div>
+          {variableNames.map((name) => {
+            const row = project.inputView.rows.find((item) => item.name === name)
+            const effective = draftEffectiveInfo(name)
+            return (
+              <Fragment key={name}>
+                <div className="tf-input-name-cell">
+                  <strong>{name}</strong>
+                  <span className={`tf-input-badge ${row?.required ? 'required' : 'optional'}`}>
+                    {row?.required ? 'Required' : 'Optional'}
+                  </span>
+                  {row?.description && <span className="tf-input-description">{row.description}</span>}
+                </div>
+                {renderLayerEditor('base', name)}
+                {renderLayerEditor('overlay', name)}
+                <div className="tf-input-effective-cell">
+                  <div className="tf-input-effective-source">{effective.source}</div>
+                  <div className="tf-input-effective-value">{effective.value || '-'}</div>
+                  {effective.note && <div className="tf-input-effective-note">{effective.note}</div>}
+                </div>
+              </Fragment>
+            )
+          })}
+        </div>
+        {validationError && <div className="tf-inputs-error">{validationError}</div>}
+        <div className="tf-inputs-buttons">
+          <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="tf-toolbar-btn accent" onClick={handleSave}>Save</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RenameProjectDialog({
+  currentName,
+  onSave,
+  onClose
+}: {
+  currentName: string
+  onSave: (name: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(currentName)
+  const trimmed = name.trim()
+
+  return (
+    <div className="tf-inputs-overlay" onClick={onClose}>
+      <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>Rename Terraform Project</h3>
+        <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
+          This only changes the project label shown inside the app. The folder path is unchanged.
+        </p>
+        <label>
+          Project Name
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        <div className="tf-inputs-buttons">
+          <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="tf-toolbar-btn accent" onClick={() => onSave(trimmed)} disabled={!trimmed}>Save</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WorkspaceCreateDialog({
+  currentWorkspace,
+  onCreate,
+  onClose
+}: {
+  currentWorkspace: string
+  onCreate: (workspaceName: string) => void
+  onClose: () => void
+}) {
+  const [workspaceName, setWorkspaceName] = useState('')
+  const trimmed = workspaceName.trim()
+
+  return (
+    <div className="tf-inputs-overlay" onClick={onClose}>
+      <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>Create Workspace</h3>
+        <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
+          Terraform will create the workspace and switch from <strong>{currentWorkspace}</strong> to the new one.
+        </p>
+        <label>
+          Workspace Name
+          <input value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} autoFocus placeholder="staging" />
+        </label>
+        <div className="tf-inputs-buttons">
+          <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="tf-toolbar-btn accent" onClick={() => onCreate(trimmed)} disabled={!trimmed}>Create Workspace</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WorkspaceDeleteDialog({
+  workspaces,
+  onDelete,
+  onClose
+}: {
+  workspaces: TerraformWorkspaceSummary[]
+  onDelete: (workspaceName: string) => void
+  onClose: () => void
+}) {
+  const deletable = workspaces.filter((workspace) => !workspace.isCurrent && workspace.name !== 'default')
+  const [selectedWorkspace, setSelectedWorkspace] = useState(deletable[0]?.name ?? '')
+  const [typed, setTyped] = useState('')
+
+  if (deletable.length === 0) {
+    return (
+      <div className="tf-inputs-overlay" onClick={onClose}>
+        <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
+          <h3>Delete Workspace</h3>
+          <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
+            Only non-default workspaces that are not currently selected can be deleted.
+          </p>
+          <div className="tf-inputs-buttons">
+            <button type="button" className="tf-toolbar-btn" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="tf-inputs-overlay" onClick={onClose}>
       <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3>Inputs for {project.name}</h3>
-        <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
-          You can provide a .tfvars file, JSON variables, or both. Variables are exported as TF_VAR_* and written to an auto.tfvars.json file.
+        <h3>Delete Workspace</h3>
+        <p style={{ margin: 0, fontSize: 12, color: '#ffb3aa' }}>
+          This removes the Terraform workspace reference. Terraform will refuse if the backend still has protected state constraints.
         </p>
-        {prefillMissing && prefillMissing.length > 0 && (
-          <p style={{ margin: 0, fontSize: 12, color: '#f39c12' }}>
-            Required now: {uniqueStrings(prefillMissing).join(', ')}
-          </p>
-        )}
         <label>
-          Var File Path
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input value={varFile} onChange={(e) => setVarFile(e.target.value)} placeholder="path/to/terraform.tfvars" style={{ flex: 1 }} />
-            <button type="button" className="tf-toolbar-btn" onClick={handleBrowse}>Browse</button>
-          </div>
+          Workspace
+          <select value={selectedWorkspace} onChange={(e) => { setSelectedWorkspace(e.target.value); setTyped('') }}>
+            {deletable.map((workspace) => (
+              <option key={workspace.name} value={workspace.name}>{workspace.name}</option>
+            ))}
+          </select>
         </label>
         <label>
-          Variables (JSON)
-          <textarea value={jsonText} onChange={(e) => { setJsonText(e.target.value); setValidationError('') }} placeholder='{"key": "value"}' />
+          Type Workspace Name To Confirm
+          <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
         </label>
-        {validationError && <div className="tf-inputs-error">{validationError}</div>}
-        {project.detectedVariables.length > 0 && (
-          <div style={{ fontSize: 11, color: '#6b7688' }}>
-            Detected variables: {project.detectedVariables.map((v) => v.name).join(', ')}
-          </div>
-        )}
         <div className="tf-inputs-buttons">
           <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
-          <button type="button" className="tf-toolbar-btn accent" onClick={handleSave}>Save</button>
+          <button
+            type="button"
+            className="tf-toolbar-btn danger"
+            onClick={() => onDelete(selectedWorkspace)}
+            disabled={!selectedWorkspace || typed !== selectedWorkspace}
+          >
+            Delete Workspace
+          </button>
         </div>
       </div>
     </div>
@@ -204,6 +772,58 @@ function TypedConfirmDialog({
 
 const ACTION_COLORS: Record<string, string> = {
   create: '#2ecc71', update: '#f39c12', delete: '#e74c3c', replace: '#9b59b6', 'no-op': '#5a6a7a'
+}
+
+const PLAN_MODE_LABELS: Record<Exclude<TerraformPlanOptions['mode'], undefined>, string> = {
+  standard: 'Standard saved plan',
+  'refresh-only': 'Refresh-only plan',
+  targeted: 'Targeted plan',
+  replace: 'Replace plan'
+}
+
+function actionSymbol(action: TerraformPlanAction): string {
+  if (action === 'create') return '+'
+  if (action === 'delete') return '-'
+  if (action === 'update') return '~'
+  if (action === 'replace') return '±'
+  return '·'
+}
+
+function parsePlanAddressList(text: string): string[] {
+  return [...new Set(
+    text
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )]
+}
+
+function groupLabel(groupBy: 'module' | 'action' | 'resource-type'): string {
+  if (groupBy === 'module') return 'Module'
+  if (groupBy === 'action') return 'Action'
+  return 'Resource type'
+}
+
+function emptyPlanSummary(mode: NonNullable<TerraformPlanOptions['mode']> = 'standard'): TerraformProject['lastPlanSummary'] {
+  return {
+    create: 0,
+    update: 0,
+    delete: 0,
+    replace: 0,
+    noop: 0,
+    hasChanges: false,
+    affectedResources: 0,
+    affectedModules: [],
+    affectedProviders: [],
+    affectedServices: [],
+    groups: { byModule: [], byAction: [], byResourceType: [] },
+    jsonFieldsUsed: [],
+    heuristicNotes: [],
+    hasDestructiveChanges: false,
+    hasReplacementChanges: false,
+    isDeleteHeavy: false,
+    request: { mode, targets: [], replaceAddresses: [] }
+  }
 }
 
 function SummaryConfirmDialog({
@@ -632,6 +1252,202 @@ function DiagramView({ diagram }: { diagram: TerraformDiagram }) {
 
 /* ── Actions Tab ──────────────────────────────────────────── */
 
+function PlanGroupList({
+  groups,
+  changesByAddress
+}: {
+  groups: TerraformPlanGroup[]
+  changesByAddress: Map<string, TerraformPlanChange>
+}) {
+  return (
+    <div className="tf-plan-group-list">
+      {groups.map((group) => (
+        <div key={`${group.kind}:${group.key}`} className="tf-plan-group-card">
+          <div className="tf-plan-group-head">
+            <div>
+              <div className="tf-plan-group-label">{group.label}</div>
+              <div className="tf-section-hint">{group.count} affected resource{group.count === 1 ? '' : 's'}</div>
+            </div>
+            <div className="tf-summary">
+              <span className="tf-summary-item"><span className="tf-summary-count create">{group.summary.create}</span>create</span>
+              <span className="tf-summary-item"><span className="tf-summary-count update">{group.summary.update}</span>update</span>
+              <span className="tf-summary-item"><span className="tf-summary-count delete">{group.summary.delete}</span>delete</span>
+              <span className="tf-summary-item"><span className="tf-summary-count replace">{group.summary.replace}</span>replace</span>
+            </div>
+          </div>
+          <div className="tf-plan-group-resources">
+            {group.resources.slice(0, 8).map((address) => {
+              const change = changesByAddress.get(address)
+              if (!change) return null
+              return (
+                <div key={address} className={`tf-plan-change-card compact ${change.isReplacement ? 'replace' : change.isDestructive ? 'destructive' : ''}`}>
+                  <div className="tf-plan-change-title">
+                    <span className={`tf-plan-action-badge ${change.actionLabel}`}>{actionSymbol(change.actionLabel)} {change.actionLabel}</span>
+                    <span className="tf-plan-change-address">{change.address}</span>
+                  </div>
+                </div>
+              )
+            })}
+            {group.resources.length > 8 && (
+              <div className="tf-section-hint">+{group.resources.length - 8} more resources in this group</div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* ── Governance / Safety Panel ────────────────────────────── */
+
+const CHECK_STATUS_ICON: Record<string, string> = {
+  passed: '\u2713',
+  failed: '\u2717',
+  skipped: '\u2014',
+  error: '!'
+}
+
+const SEVERITY_LABELS: Record<string, string> = {
+  critical: 'CRIT',
+  high: 'HIGH',
+  medium: 'MED',
+  low: 'LOW',
+  info: 'INFO'
+}
+
+function GovernancePanel({
+  toolkit,
+  report,
+  running,
+  onRunChecks,
+  onDetectTools
+}: {
+  toolkit: TerraformGovernanceToolkit | null
+  report: TerraformGovernanceReport | null
+  running: boolean
+  onRunChecks: () => void
+  onDetectTools: () => void
+}) {
+  const [expandedCheck, setExpandedCheck] = useState<string | null>(null)
+
+  const hasAnyTool = toolkit?.tools.some((t) => t.available) ?? false
+
+  return (
+    <div className="tf-section tf-governance-panel">
+      <div className="tf-section-head">
+        <div>
+          <h3>Safety Checks</h3>
+          {!toolkit?.detectedAt && (
+            <div className="tf-section-hint">Detect available tools to enable governance checks.</div>
+          )}
+        </div>
+        <div className="tf-governance-actions">
+          {toolkit?.detectedAt ? (
+            <button className="tf-toolbar-btn accent" disabled={running || !hasAnyTool} onClick={onRunChecks}>
+              {running ? 'Running...' : 'Run Checks'}
+            </button>
+          ) : (
+            <button className="tf-toolbar-btn" onClick={onDetectTools}>Detect Tools</button>
+          )}
+        </div>
+      </div>
+
+      {/* Tool availability */}
+      {toolkit?.detectedAt && (
+        <div className="tf-governance-tools">
+          {toolkit.tools.map((tool) => (
+            <span
+              key={tool.id}
+              className={`tf-governance-tool-badge ${tool.available ? 'available' : 'missing'}`}
+              title={tool.available ? `${tool.label} v${tool.version}` : `${tool.label} not found`}
+            >
+              {tool.available ? '\u2713' : '\u2014'} {tool.label}
+              {!tool.available && !tool.required && <span className="tf-governance-optional"> (optional)</span>}
+            </span>
+          ))}
+          <button
+            className="tf-governance-rescan"
+            onClick={onDetectTools}
+            title="Re-detect tools"
+          >
+            Rescan
+          </button>
+        </div>
+      )}
+
+      {/* Check results */}
+      {report && (
+        <div className="tf-governance-results">
+          <div className="tf-governance-summary-row">
+            <span className={`tf-governance-verdict ${report.allBlockingPassed ? 'pass' : 'fail'}`}>
+              {report.allBlockingPassed ? '\u2713 All blocking checks passed' : '\u2717 Blocking check(s) failed'}
+            </span>
+            <span className="tf-governance-timestamp">
+              {new Date(report.ranAt).toLocaleTimeString()}
+            </span>
+          </div>
+
+          {report.checks.map((check) => (
+            <div
+              key={check.toolId}
+              className={`tf-governance-check ${check.status}`}
+            >
+              <div
+                className="tf-governance-check-header"
+                onClick={() => setExpandedCheck(expandedCheck === check.toolId ? null : check.toolId)}
+              >
+                <span className={`tf-governance-check-icon ${check.status}`}>
+                  {CHECK_STATUS_ICON[check.status] ?? '?'}
+                </span>
+                <span className="tf-governance-check-label">{check.label}</span>
+                {check.blocking && <span className="tf-governance-blocking-badge">blocking</span>}
+                <span className="tf-governance-check-summary">{check.summary}</span>
+                <span className="tf-governance-check-duration">{check.durationMs}ms</span>
+                <span className="tf-governance-check-expand">
+                  {expandedCheck === check.toolId ? '\u25BC' : '\u25B6'}
+                </span>
+              </div>
+
+              {expandedCheck === check.toolId && (
+                <div className="tf-governance-check-detail">
+                  {check.findings.length > 0 && (
+                    <div className="tf-governance-findings">
+                      {check.findings.slice(0, 50).map((f, i) => (
+                        <div key={i} className={`tf-governance-finding ${f.severity}`}>
+                          <span className={`tf-governance-severity ${f.severity}`}>
+                            {SEVERITY_LABELS[f.severity] ?? f.severity}
+                          </span>
+                          <span className="tf-governance-finding-msg">{f.message}</span>
+                          {f.file && (
+                            <span className="tf-governance-finding-loc">
+                              {f.file}{f.line > 0 ? `:${f.line}` : ''}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                      {check.findings.length > 50 && (
+                        <div className="tf-governance-finding-overflow">
+                          ...and {check.findings.length - 50} more
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {check.output && (
+                    <details className="tf-governance-raw-output">
+                      <summary>Raw output</summary>
+                      <pre>{check.output}</pre>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ActionsTab({
   project,
   cliOk,
@@ -640,20 +1456,72 @@ function ActionsTab({
   onInit,
   onPlan,
   onApply,
-  onDestroy
+  onDestroy,
+  governanceToolkit,
+  governanceReport,
+  governanceRunning,
+  onRunGovernanceChecks,
+  onDetectGovernanceTools
 }: {
   project: TerraformProject
   cliOk: boolean
   running: boolean
   lastLog: TerraformCommandLog | null
   onInit: () => void
-  onPlan: () => void
+  onPlan: (options?: TerraformPlanOptions) => void
   onApply: () => void
   onDestroy: () => void
+  governanceToolkit: TerraformGovernanceToolkit | null
+  governanceReport: TerraformGovernanceReport | null
+  governanceRunning: boolean
+  onRunGovernanceChecks: () => void
+  onDetectGovernanceTools: () => void
 }) {
   const [outputOpen, setOutputOpen] = useState(false)
+  const [showPlanControls, setShowPlanControls] = useState(false)
+  const [advancedMode, setAdvancedMode] = useState<'refresh-only' | 'targeted' | 'replace'>('refresh-only')
+  const [targetText, setTargetText] = useState('')
+  const [replaceText, setReplaceText] = useState('')
+  const [actionFilter, setActionFilter] = useState<'all' | TerraformPlanAction>('all')
+  const [moduleFilter, setModuleFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
+  const [groupBy, setGroupBy] = useState<'module' | 'action' | 'resource-type'>('module')
+
   const s = project.lastPlanSummary
   const hasSavedPlan = project.hasSavedPlan
+  const governanceBlocked = governanceReport ? !governanceReport.allBlockingPassed : false
+  const moduleOptions = useMemo(() => ['all', ...project.lastPlanSummary.affectedModules], [project.lastPlanSummary.affectedModules])
+  const typeOptions = useMemo(
+    () => ['all', ...[...new Set(project.planChanges.filter((change) => change.actionLabel !== 'no-op').map((change) => change.type))].sort()],
+    [project.planChanges]
+  )
+  const filteredChanges = useMemo(
+    () => project.planChanges.filter((change) =>
+      change.actionLabel !== 'no-op'
+      && (actionFilter === 'all' || change.actionLabel === actionFilter)
+      && (moduleFilter === 'all' || change.modulePath === moduleFilter)
+      && (typeFilter === 'all' || change.type === typeFilter)
+    ),
+    [project.planChanges, actionFilter, moduleFilter, typeFilter]
+  )
+  const changesByAddress = useMemo(() => new Map(project.planChanges.map((change) => [change.address, change])), [project.planChanges])
+  const applyWarning = planCommitMismatchWarning(project)
+  const groupedChanges = useMemo(() => {
+    const source = groupBy === 'module'
+      ? s.groups.byModule
+      : groupBy === 'action'
+        ? s.groups.byAction
+        : s.groups.byResourceType
+    const filteredAddresses = new Set(filteredChanges.map((change) => change.address))
+    return source
+      .map((group) => ({ ...group, resources: group.resources.filter((address) => filteredAddresses.has(address)) }))
+      .filter((group) => group.resources.length > 0)
+  }, [filteredChanges, groupBy, s.groups])
+
+  const advancedAddresses = advancedMode === 'targeted'
+    ? parsePlanAddressList(targetText)
+    : parsePlanAddressList(replaceText)
+  const canRunAdvancedPlan = advancedMode === 'refresh-only' || advancedAddresses.length > 0
 
   return (
     <>
@@ -661,43 +1529,241 @@ function ActionsTab({
         <h3>Actions</h3>
         <div className="tf-actions-grid">
           <button className="tf-action-btn init" disabled={!cliOk || running} onClick={onInit}>Init</button>
-          <button className="tf-action-btn plan" disabled={!cliOk || running} onClick={onPlan}>Plan</button>
+          <button className="tf-action-btn plan" disabled={!cliOk || running} onClick={() => onPlan()}>Plan</button>
           <button
-            className="tf-action-btn apply"
-            disabled={!cliOk || running || !hasSavedPlan}
+            className={`tf-action-btn apply${governanceBlocked ? ' governance-blocked' : ''}`}
+            disabled={!cliOk || running || !hasSavedPlan || governanceBlocked}
             onClick={onApply}
-            title={!hasSavedPlan ? 'Run Plan first to enable Apply.' : undefined}
+            title={!hasSavedPlan ? 'Run Plan first to enable Apply.' : governanceBlocked ? 'Blocked: governance checks failed.' : undefined}
           >
             Apply
           </button>
           <button
-            className="tf-action-btn destroy"
-            disabled={!cliOk || running || !hasSavedPlan}
+            className={`tf-action-btn destroy${governanceBlocked ? ' governance-blocked' : ''}`}
+            disabled={!cliOk || running || !hasSavedPlan || governanceBlocked}
             onClick={onDestroy}
-            title={!hasSavedPlan ? 'Run Plan first to enable Destroy.' : undefined}
+            title={!hasSavedPlan ? 'Run Plan first to enable Destroy.' : governanceBlocked ? 'Blocked: governance checks failed.' : undefined}
           >
             Destroy
           </button>
         </div>
-        {!hasSavedPlan && (
-          <div className="tf-section-hint">Run Plan first. Apply and Destroy stay disabled until a saved plan exists.</div>
+        <div className="tf-plan-controls-toggle-row">
+          <button type="button" className="tf-toolbar-btn" onClick={() => setShowPlanControls((value) => !value)} disabled={!cliOk || running}>
+            {showPlanControls ? 'Hide plan controls' : 'Show plan controls'}
+          </button>
+          {!hasSavedPlan && (
+            <div className="tf-section-hint">Run Plan first. Apply and Destroy stay disabled until a saved plan exists.</div>
+          )}
+          {governanceBlocked && (
+            <div className="tf-section-hint" style={{ color: '#e74c3c' }}>Apply/Destroy blocked: required governance check(s) failed. Fix issues and re-run Safety Checks.</div>
+          )}
+        </div>
+        {applyWarning && (
+          <div className="tf-section-hint" style={{ color: '#d35400' }}>{applyWarning}</div>
+        )}
+        {showPlanControls && (
+          <div className="tf-plan-controls">
+            <div className="tf-plan-mode-row">
+              <button type="button" className={advancedMode === 'refresh-only' ? 'active' : ''} onClick={() => setAdvancedMode('refresh-only')}>Refresh-only</button>
+              <button type="button" className={advancedMode === 'targeted' ? 'active' : ''} onClick={() => setAdvancedMode('targeted')}>Targeted</button>
+              <button type="button" className={advancedMode === 'replace' ? 'active' : ''} onClick={() => setAdvancedMode('replace')}>Replace</button>
+            </div>
+            <div className="tf-section-hint">
+              {advancedMode === 'refresh-only' && 'Refresh-only reads remote objects and updates state without proposing infrastructure mutations.'}
+              {advancedMode === 'targeted' && 'Targeted plans should be used sparingly. Enter one resource address per line or comma-separated.'}
+              {advancedMode === 'replace' && 'Replace plans force selected resources through destroy/create or create/delete replacement logic.'}
+            </div>
+            {advancedMode === 'targeted' && (
+              <textarea
+                className="tf-plan-address-input"
+                value={targetText}
+                onChange={(event) => setTargetText(event.target.value)}
+                placeholder={'module.network.aws_subnet.private[0]\naws_instance.web'}
+              />
+            )}
+            {advancedMode === 'replace' && (
+              <textarea
+                className="tf-plan-address-input"
+                value={replaceText}
+                onChange={(event) => setReplaceText(event.target.value)}
+                placeholder={'module.app.aws_instance.web\naws_db_instance.main'}
+              />
+            )}
+            <div className="tf-plan-controls-footer">
+              <div className="tf-section-hint">
+                {advancedMode === 'refresh-only'
+                  ? 'This still produces a saved plan file.'
+                  : `${advancedAddresses.length} explicit resource address${advancedAddresses.length === 1 ? '' : 'es'} selected.`}
+              </div>
+              <button
+                type="button"
+                className="tf-toolbar-btn accent"
+                disabled={!cliOk || running || !canRunAdvancedPlan}
+                onClick={() => onPlan(
+                  advancedMode === 'refresh-only'
+                    ? { mode: 'refresh-only' }
+                    : advancedMode === 'targeted'
+                      ? { mode: 'targeted', targets: advancedAddresses }
+                      : { mode: 'replace', replaceAddresses: advancedAddresses }
+                )}
+              >
+                Run {advancedMode === 'refresh-only' ? 'refresh-only' : advancedMode} plan
+              </button>
+            </div>
+          </div>
         )}
       </div>
-      {(s.create > 0 || s.update > 0 || s.delete > 0 || s.replace > 0) && (
+
+      <GovernancePanel
+        toolkit={governanceToolkit}
+        report={governanceReport}
+        running={governanceRunning}
+        onRunChecks={onRunGovernanceChecks}
+        onDetectTools={onDetectGovernanceTools}
+      />
+
+      <div className={`tf-section ${s.isDeleteHeavy ? 'tf-plan-section-danger' : s.hasReplacementChanges ? 'tf-plan-section-warning' : ''}`}>
+        <div className="tf-section-head">
+          <div>
+            <h3>Plan Summary</h3>
+            <div className="tf-section-hint">
+              {PLAN_MODE_LABELS[s.request.mode]}{s.request.targets.length > 0 ? ` • ${s.request.targets.length} target${s.request.targets.length === 1 ? '' : 's'}` : ''}{s.request.replaceAddresses.length > 0 ? ` • ${s.request.replaceAddresses.length} replace address${s.request.replaceAddresses.length === 1 ? '' : 'es'}` : ''}
+            </div>
+          </div>
+          <div className="tf-plan-risk-row">
+            {s.hasReplacementChanges && <span className="tf-plan-risk-badge replace">Replacement changes</span>}
+            {s.isDeleteHeavy && <span className="tf-plan-risk-badge destructive">Delete-heavy blast radius</span>}
+          </div>
+        </div>
+        <div className="tf-plan-summary-grid">
+          <div className="tf-plan-summary-card">
+            <div className="tf-plan-summary-label">Action totals</div>
+            <div className="tf-summary">
+              <span className="tf-summary-item"><span className="tf-summary-count create">{s.create}</span> create</span>
+              <span className="tf-summary-item"><span className="tf-summary-count update">{s.update}</span> update</span>
+              <span className="tf-summary-item"><span className="tf-summary-count delete">{s.delete}</span> delete</span>
+              <span className="tf-summary-item"><span className="tf-summary-count replace">{s.replace}</span> replace</span>
+              <span className="tf-summary-item"><span className="tf-summary-count" style={{ color: '#5a6a7a' }}>{s.noop}</span> no-op</span>
+            </div>
+          </div>
+          <div className="tf-plan-summary-card">
+            <div className="tf-plan-summary-label">Blast radius</div>
+            <div className="tf-plan-stat-grid">
+              <div><strong>{s.affectedResources}</strong><span>resources</span></div>
+              <div><strong>{s.affectedModules.length}</strong><span>modules</span></div>
+              <div><strong>{s.affectedProviders.length}</strong><span>providers</span></div>
+              <div><strong>{s.affectedServices.length}</strong><span>services</span></div>
+            </div>
+          </div>
+        </div>
+        {s.hasChanges ? (
+          <>
+            <div className="tf-plan-chip-row">
+              {s.affectedModules.map((modulePath) => <span key={modulePath} className="tf-plan-chip">{modulePath}</span>)}
+            </div>
+            <div className="tf-plan-chip-row">
+              {s.affectedServices.map((service) => <span key={service} className="tf-plan-chip subtle">{service}</span>)}
+            </div>
+          </>
+        ) : (
+          <div className="tf-empty" style={{ padding: 0 }}>No actionable changes in the saved plan.</div>
+        )}
+        <div className="tf-section-hint">
+          JSON fields used: {s.jsonFieldsUsed.join(', ')}
+        </div>
+        <div className="tf-section-hint">
+          Heuristic areas: {s.heuristicNotes.join(' ')}
+        </div>
+      </div>
+
+      {filteredChanges.length > 0 && (
         <div className="tf-section">
-          <div className="tf-summary">
-            <span className="tf-summary-item"><span className="tf-summary-count create">{s.create}</span> create</span>
-            <span className="tf-summary-item"><span className="tf-summary-count update">{s.update}</span> update</span>
-            <span className="tf-summary-item"><span className="tf-summary-count delete">{s.delete}</span> delete</span>
-            <span className="tf-summary-item"><span className="tf-summary-count replace">{s.replace}</span> replace</span>
-            <span className="tf-summary-item"><span className="tf-summary-count" style={{ color: '#5a6a7a' }}>{s.noop}</span> no-op</span>
+          <div className="tf-section-head">
+            <div>
+              <h3>Change Explorer</h3>
+              <div className="tf-section-hint">Filter by action, module, or type, then regroup the remaining resources.</div>
+            </div>
+            <div className="tf-plan-filters">
+              <label className="tf-drift-filter-select">
+                Action
+                <select value={actionFilter} onChange={(event) => setActionFilter(event.target.value as 'all' | TerraformPlanAction)}>
+                  <option value="all">All</option>
+                  <option value="create">Create</option>
+                  <option value="update">Update</option>
+                  <option value="delete">Delete</option>
+                  <option value="replace">Replace</option>
+                </select>
+              </label>
+              <label className="tf-drift-filter-select">
+                Module
+                <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}>
+                  {moduleOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              </label>
+              <label className="tf-drift-filter-select">
+                Type
+                <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+                  {typeOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              </label>
+              <label className="tf-drift-filter-select">
+                Group
+                <select value={groupBy} onChange={(event) => setGroupBy(event.target.value as 'module' | 'action' | 'resource-type')}>
+                  <option value="module">Module</option>
+                  <option value="action">Action</option>
+                  <option value="resource-type">Resource type</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div className="tf-section-hint">{filteredChanges.length} change{filteredChanges.length === 1 ? '' : 's'} match the current filters. Grouped by {groupLabel(groupBy).toLowerCase()}.</div>
+          <PlanGroupList groups={groupedChanges} changesByAddress={changesByAddress} />
+          <div className="tf-plan-change-list">
+            {filteredChanges.map((change) => (
+              <div key={change.address} className={`tf-plan-change-card ${change.isReplacement ? 'replace' : change.isDestructive ? 'destructive' : ''}`}>
+                <div className="tf-plan-change-head">
+                  <div className="tf-plan-change-title">
+                    <span className={`tf-plan-action-badge ${change.actionLabel}`}>{actionSymbol(change.actionLabel)} {change.actionLabel}</span>
+                    <span className="tf-plan-change-address">{change.address}</span>
+                  </div>
+                  <div className="tf-plan-change-meta">
+                    <span>{change.type}</span>
+                    <span>{change.modulePath}</span>
+                    <span>{change.providerDisplayName || change.provider}</span>
+                    <span>{change.service}</span>
+                  </div>
+                </div>
+                {(change.replacePaths.length > 0 || change.actionReason) && (
+                  <div className="tf-plan-change-flags">
+                    {change.replacePaths.map((path) => <span key={path} className="tf-plan-flag replace">replace: {path}</span>)}
+                    {change.actionReason && <span className="tf-plan-flag">{change.actionReason}</span>}
+                  </div>
+                )}
+                {change.changedAttributes.length > 0 && (
+                  <div className="tf-plan-attribute-list">
+                    {change.changedAttributes.slice(0, 8).map((attribute) => (
+                      <div key={`${change.address}:${attribute.path}`} className={`tf-plan-attribute-row ${attribute.requiresReplacement ? 'replace' : ''}`}>
+                        <div className="tf-plan-attribute-path">{attribute.path}</div>
+                        <div className="tf-plan-attribute-values">
+                          <span>{attribute.before}</span>
+                          <span>→</span>
+                          <span>{attribute.after}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
+
       <div className="tf-section">
         <h3>Infrastructure Diagram</h3>
         <DiagramView diagram={project.diagram} />
       </div>
+
       {project.actionRows.length > 0 && (
         <div className="tf-section">
           <h3>Action Table</h3>
@@ -716,9 +1782,7 @@ function ActionsTab({
                 {project.actionRows.map((row) => (
                   <tr key={row.order}>
                     <td>{row.order}</td>
-                    <td>
-                      <span className={`tf-summary-count ${row.action}`}>{row.action}</span>
-                    </td>
+                    <td><span className={`tf-summary-count ${row.action}`}>{row.action}</span></td>
                     <td title={row.address}>{row.address}</td>
                     <td>{row.resourceType}</td>
                     <td title={row.physicalResourceId}>{row.physicalResourceId}</td>
@@ -729,6 +1793,7 @@ function ActionsTab({
           </div>
         </div>
       )}
+
       <div className="tf-section">
         <button className="tf-output-toggle" onClick={() => setOutputOpen(!outputOpen)}>
           {outputOpen ? '▼' : '▶'} Command Output
@@ -743,6 +1808,254 @@ function ActionsTab({
         )}
       </div>
     </>
+  )
+}
+
+function StateTab({
+  project,
+  running,
+  lastLog,
+  onImport,
+  onMove,
+  onRemove,
+  onUnlock,
+  onReload
+}: {
+  project: TerraformProject
+  running: boolean
+  lastLog: TerraformCommandLog | null
+  onImport: (address: string, importId: string) => void
+  onMove: (fromAddress: string, toAddress: string) => void
+  onRemove: (address: string) => void
+  onUnlock: (lockId: string) => void
+  onReload: () => void
+}) {
+  const [importAddress, setImportAddress] = useState('')
+  const [importId, setImportId] = useState('')
+  const [moveFrom, setMoveFrom] = useState('')
+  const [moveTo, setMoveTo] = useState('')
+  const [removeAddress, setRemoveAddress] = useState('')
+  const [unlockId, setUnlockId] = useState(project.stateLockInfo?.lockId ?? '')
+  const stateAddresses = useMemo(() => project.stateAddresses.slice().sort(), [project.stateAddresses])
+  const latestBackup = project.latestStateBackup
+  const lockInfo = project.stateLockInfo
+  const lastStateLog = lastLog && ['import', 'state-mv', 'state-rm', 'force-unlock'].includes(lastLog.command) ? lastLog : null
+
+  useEffect(() => {
+    setUnlockId(project.stateLockInfo?.lockId ?? '')
+  }, [project.stateLockInfo?.lockId])
+
+  return (
+    <>
+      <div className="tf-section tf-state-overview">
+        <div className="tf-section-head">
+          <div>
+            <h3>State Operations Center</h3>
+            <div className="tf-section-hint">
+              Guided state changes run in the main process. Destructive actions require confirmation and write a local backup first.
+            </div>
+          </div>
+          <button className="tf-toolbar-btn" onClick={onReload} disabled={running}>Refresh State</button>
+        </div>
+        <div className="tf-state-meta-grid">
+          <div className="tf-state-meta-card">
+            <div className="tf-state-meta-label">Current state source</div>
+            <div className="tf-state-meta-value">{project.stateSource || 'none'}</div>
+            <div className="tf-state-meta-subtle">{project.metadata.backend.label}</div>
+          </div>
+          <div className="tf-state-meta-card">
+            <div className="tf-state-meta-label">Latest backup</div>
+            <div className="tf-state-meta-value">{latestBackup ? formatIsoDate(latestBackup.createdAt) : 'No backup yet'}</div>
+            <div className="tf-state-meta-subtle">
+              {latestBackup ? `${formatBytes(latestBackup.sizeBytes)} from ${latestBackup.source}` : 'A backup is created before move, remove, and unlock.'}
+            </div>
+          </div>
+          <div className="tf-state-meta-card">
+            <div className="tf-state-meta-label">Backup inventory</div>
+            <div className="tf-state-meta-value">{project.stateBackups.length}</div>
+            <div className="tf-state-meta-subtle">
+              {latestBackup ? latestBackup.path : 'Stored under Electron userData in a project-scoped backup folder.'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="tf-section">
+        <div className="tf-state-card-grid">
+          <div className="tf-state-card">
+            <h3>Import Resource</h3>
+            <div className="tf-section-hint">
+              Bring an existing remote object under Terraform state without typing raw CLI syntax.
+            </div>
+            <label className="tf-state-field">
+              <span>Terraform address</span>
+              <input value={importAddress} onChange={(e) => setImportAddress(e.target.value)} placeholder="aws_s3_bucket.logs" />
+            </label>
+            <label className="tf-state-field">
+              <span>Provider import ID</span>
+              <input value={importId} onChange={(e) => setImportId(e.target.value)} placeholder="my-existing-bucket" />
+            </label>
+            <button
+              className="tf-toolbar-btn accent"
+              disabled={running || !importAddress.trim() || !importId.trim()}
+              onClick={() => onImport(importAddress.trim(), importId.trim())}
+            >
+              Run Import
+            </button>
+          </div>
+
+          <div className="tf-state-card tf-state-card-warning">
+            <h3>Move State Address</h3>
+            <div className="tf-section-hint">
+              Rename or relocate a state entry during refactors. A state backup is captured immediately before the move.
+            </div>
+            <label className="tf-state-field">
+              <span>From address</span>
+              <input value={moveFrom} onChange={(e) => setMoveFrom(e.target.value)} placeholder="aws_instance.old_name" list="tf-state-addresses" />
+            </label>
+            <label className="tf-state-field">
+              <span>To address</span>
+              <input value={moveTo} onChange={(e) => setMoveTo(e.target.value)} placeholder="module.app.aws_instance.new_name" />
+            </label>
+            <button
+              className="tf-toolbar-btn danger"
+              disabled={running || !moveFrom.trim() || !moveTo.trim()}
+              onClick={() => onMove(moveFrom.trim(), moveTo.trim())}
+            >
+              Confirm Move
+            </button>
+          </div>
+
+          <div className="tf-state-card tf-state-card-danger">
+            <h3>Remove From State</h3>
+            <div className="tf-section-hint">
+              Forget a resource without destroying it in the provider. This is destructive to Terraform state and always creates a backup first.
+            </div>
+            <label className="tf-state-field">
+              <span>State address</span>
+              <input value={removeAddress} onChange={(e) => setRemoveAddress(e.target.value)} placeholder="aws_security_group.legacy" list="tf-state-addresses" />
+            </label>
+            <button
+              className="tf-toolbar-btn danger"
+              disabled={running || !removeAddress.trim()}
+              onClick={() => onRemove(removeAddress.trim())}
+            >
+              Remove Address
+            </button>
+          </div>
+        </div>
+        <datalist id="tf-state-addresses">
+          {stateAddresses.map((address) => <option key={address} value={address} />)}
+        </datalist>
+      </div>
+
+      <div className="tf-section">
+        <div className="tf-state-card-grid">
+          <div className="tf-state-card">
+            <h3>Lock Status</h3>
+            <div className="tf-kv">
+              <div className="tf-kv-row"><div className="tf-kv-label">Backend</div><div className="tf-kv-value">{project.metadata.backendType}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Inspection</div><div className="tf-kv-value">{lockInfo?.supported ? 'Available' : 'Limited'}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Lock ID</div><div className="tf-kv-value">{lockInfo?.lockId || '(not detected)'}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Operation</div><div className="tf-kv-value">{lockInfo?.operation || '-'}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Who</div><div className="tf-kv-value">{lockInfo?.who || '-'}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Created</div><div className="tf-kv-value">{lockInfo?.created ? formatIsoDate(lockInfo.created) : '-'}</div></div>
+            </div>
+            {lockInfo?.message && <div className="tf-state-inline-note">{lockInfo.message}</div>}
+            {lockInfo?.infoPath && <div className="tf-state-inline-note">Lock info file: {lockInfo.infoPath}</div>}
+          </div>
+
+          <div className="tf-state-card tf-state-card-danger">
+            <h3>Force Unlock</h3>
+            <div className="tf-section-hint">
+              Only unlock when you are certain no active Terraform operation is still holding the lock. A state backup is taken before unlock.
+            </div>
+            <label className="tf-state-field">
+              <span>Lock ID</span>
+              <input value={unlockId} onChange={(e) => setUnlockId(e.target.value)} placeholder="Paste Terraform lock ID" />
+            </label>
+            <button
+              className="tf-toolbar-btn danger"
+              disabled={running || !unlockId.trim()}
+              onClick={() => onUnlock(unlockId.trim())}
+            >
+              Force Unlock
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="tf-section">
+        <h3>Recent Backups</h3>
+        {project.stateBackups.length === 0 ? (
+          <div className="tf-empty">No state backups captured yet.</div>
+        ) : (
+          <div className="tf-state-backup-list">
+            {project.stateBackups.slice(0, 5).map((backup) => (
+              <div key={backup.path} className="tf-state-backup-row">
+                <div>
+                  <div className="tf-state-backup-title">{formatIsoDate(backup.createdAt)}</div>
+                  <div className="tf-state-backup-path">{backup.path}</div>
+                </div>
+                <div className="tf-state-backup-meta">{backup.source} • {formatBytes(backup.sizeBytes)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {lastStateLog && (
+        <div className="tf-section">
+          <button className="tf-output-toggle" type="button">
+            Last State Operation Output: {lastStateLog.command}
+          </button>
+          <div className="tf-output-panel">{lastStateLog.output || '(no output)'}</div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function WorkspaceControls({
+  project,
+  running,
+  onSelectWorkspace,
+  onCreateWorkspace,
+  onDeleteWorkspace
+}: {
+  project: TerraformProject
+  running: boolean
+  onSelectWorkspace: (workspaceName: string) => void
+  onCreateWorkspace: () => void
+  onDeleteWorkspace: () => void
+}) {
+  const canDeleteWorkspace = project.workspaces.some((workspace) => !workspace.isCurrent && workspace.name !== 'default')
+
+  return (
+    <div className="tf-section">
+      <div className="tf-section-head">
+        <div>
+          <h3>Workspace</h3>
+          <div className="tf-section-hint">
+            Current workspace: <span className="tf-workspace-badge">{project.currentWorkspace}</span>
+          </div>
+        </div>
+        <div className="tf-workspace-controls">
+          <select
+            className="tf-workspace-select"
+            value={project.currentWorkspace}
+            disabled={running || project.workspaces.length === 0}
+            onChange={(e) => onSelectWorkspace(e.target.value)}
+          >
+            {project.workspaces.map((workspace) => (
+              <option key={workspace.name} value={workspace.name}>{workspace.name}</option>
+            ))}
+          </select>
+          <button type="button" className="tf-toolbar-btn accent" onClick={onCreateWorkspace} disabled={running}>New Workspace</button>
+          <button type="button" className="tf-toolbar-btn danger" onClick={onDeleteWorkspace} disabled={running || !canDeleteWorkspace}>Delete Workspace</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -798,12 +2111,26 @@ function ResourcesTab({ project }: { project: TerraformProject }) {
 
 /* ── Main Terraform Console ───────────────────────────────── */
 
-const DRIFT_STATUS_LABELS: Record<Exclude<TerraformDriftStatus, 'unsupported'>, string> = {
+const DRIFT_STATUS_LABELS: Record<TerraformDriftStatus, string> = {
   in_sync: 'In Sync',
   drifted: 'Drifted',
   missing_in_aws: 'Missing In AWS',
-  unmanaged_in_aws: 'Unmanaged In AWS'
+  unmanaged_in_aws: 'Unmanaged In AWS',
+  unsupported: 'Unsupported'
 }
+
+const DRIFT_TREND_LABELS: Record<TerraformDriftReport['history']['trend'], string> = {
+  improving: 'Improving',
+  worsening: 'Worsening',
+  unchanged: 'Unchanged',
+  insufficient_history: 'Need More History'
+}
+
+const DRIFT_ASSESSMENT_LABELS = {
+  verified: 'Verified',
+  inferred: 'Inferred',
+  unsupported: 'Unsupported'
+} as const
 
 function driftItemKey(item: TerraformDriftItem): string {
   return `${item.terraformAddress}|${item.resourceType}|${item.cloudIdentifier}|${item.logicalName}|${item.status}`
@@ -826,10 +2153,10 @@ function DriftTab({
   report: TerraformDriftReport | null
   loading: boolean
   error: string
-  statusFilter: 'all' | Exclude<TerraformDriftStatus, 'unsupported'>
+  statusFilter: 'all' | TerraformDriftStatus
   typeFilter: string
   selectedKey: string
-  onStatusFilterChange: (value: 'all' | Exclude<TerraformDriftStatus, 'unsupported'>) => void
+  onStatusFilterChange: (value: 'all' | TerraformDriftStatus) => void
   onTypeFilterChange: (value: string) => void
   onSelectItem: (key: string) => void
   onRefresh: () => void
@@ -860,27 +2187,36 @@ function DriftTab({
           <div>
             <h3>Drift Summary</h3>
             <div className="tf-section-hint">
-              Terraform state vs live AWS inventory for region {report?.region ?? '-'}.
+              Terraform state vs live AWS inventory for region {report?.region ?? '-'} with persisted reconciliation snapshots.
             </div>
           </div>
           <button type="button" className="tf-toolbar-btn" onClick={onRefresh} disabled={loading}>
-            {loading ? 'Scanning...' : 'Refresh Drift'}
+            {loading ? 'Scanning...' : 'Manual Re-scan'}
           </button>
         </div>
         {report && (
-          <div className="tf-summary">
-            <span className="tf-summary-item"><span className="tf-summary-count">{report.summary.total}</span> total</span>
-            <span className="tf-summary-item"><span className="tf-summary-count drifted">{report.summary.statusCounts.drifted}</span> drifted</span>
-            <span className="tf-summary-item"><span className="tf-summary-count missing_in_aws">{report.summary.statusCounts.missing_in_aws}</span> missing</span>
-            <span className="tf-summary-item"><span className="tf-summary-count unmanaged_in_aws">{report.summary.statusCounts.unmanaged_in_aws}</span> unmanaged</span>
-            <span className="tf-summary-item"><span className="tf-summary-count in_sync">{report.summary.statusCounts.in_sync}</span> in sync</span>
-            <span className="tf-summary-item">scanned: {report.summary.scannedAt ? new Date(report.summary.scannedAt).toLocaleString() : '-'}</span>
-          </div>
+          <>
+            <div className="tf-summary">
+              <span className="tf-summary-item"><span className="tf-summary-count">{report.summary.total}</span> total</span>
+              <span className="tf-summary-item"><span className="tf-summary-count drifted">{report.summary.statusCounts.drifted}</span> drifted</span>
+              <span className="tf-summary-item"><span className="tf-summary-count missing_in_aws">{report.summary.statusCounts.missing_in_aws}</span> missing</span>
+              <span className="tf-summary-item"><span className="tf-summary-count unmanaged_in_aws">{report.summary.statusCounts.unmanaged_in_aws}</span> unmanaged</span>
+              <span className="tf-summary-item"><span className="tf-summary-count unsupported">{report.summary.statusCounts.unsupported}</span> unsupported</span>
+              <span className="tf-summary-item"><span className="tf-summary-count in_sync">{report.summary.statusCounts.in_sync}</span> in sync</span>
+            </div>
+            <div className="tf-kv" style={{ marginTop: 12 }}>
+              <div className="tf-kv-row"><div className="tf-kv-label">Last Drift Scan</div><div className="tf-kv-value">{formatIsoDate(report.history.latestScanAt || report.summary.scannedAt)}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Scan Source</div><div className="tf-kv-value">{report.fromCache ? 'Loaded from local snapshot history' : 'Fresh live AWS scan'}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Trend</div><div className="tf-kv-value">{DRIFT_TREND_LABELS[report.history.trend]}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Verified Findings</div><div className="tf-kv-value">{report.summary.verifiedCount}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Items With Inferred Signals</div><div className="tf-kv-value">{report.summary.inferredCount}</div></div>
+            </div>
+          </>
         )}
         <div className="tf-drift-filters">
           <div className="tf-drift-status-row">
             <button type="button" className={statusFilter === 'all' ? 'active' : ''} onClick={() => onStatusFilterChange('all')}>All</button>
-            {(Object.keys(DRIFT_STATUS_LABELS) as Array<Exclude<TerraformDriftStatus, 'unsupported'>>).map((status) => (
+            {(Object.keys(DRIFT_STATUS_LABELS) as TerraformDriftStatus[]).map((status) => (
               <button key={status} type="button" className={statusFilter === status ? 'active' : ''} onClick={() => onStatusFilterChange(status)}>
                 {DRIFT_STATUS_LABELS[status]}
               </button>
@@ -922,7 +2258,7 @@ function DriftTab({
                     const key = driftItemKey(item)
                     return (
                       <tr key={key} className={selectedItem && driftItemKey(selectedItem) === key ? 'active' : ''} onClick={() => onSelectItem(key)}>
-                        <td><span className={`tf-drift-badge ${item.status}`}>{DRIFT_STATUS_LABELS[item.status as Exclude<TerraformDriftStatus, 'unsupported'>]}</span></td>
+                        <td><span className={`tf-drift-badge ${item.status}`}>{DRIFT_STATUS_LABELS[item.status]}</span></td>
                         <td>{item.resourceType}</td>
                         <td>{item.logicalName || '-'}</td>
                         <td title={item.terraformAddress}>{item.terraformAddress || '-'}</td>
@@ -946,7 +2282,8 @@ function DriftTab({
                 </div>
               </div>
               <div className="tf-kv">
-                <div className="tf-kv-row"><div className="tf-kv-label">Status</div><div className="tf-kv-value">{DRIFT_STATUS_LABELS[selectedItem.status as Exclude<TerraformDriftStatus, 'unsupported'>]}</div></div>
+                <div className="tf-kv-row"><div className="tf-kv-label">Status</div><div className="tf-kv-value">{DRIFT_STATUS_LABELS[selectedItem.status]}</div></div>
+                <div className="tf-kv-row"><div className="tf-kv-label">Assessment</div><div className="tf-kv-value">{DRIFT_ASSESSMENT_LABELS[selectedItem.assessment]}</div></div>
                 <div className="tf-kv-row"><div className="tf-kv-label">Resource Type</div><div className="tf-kv-value">{selectedItem.resourceType}</div></div>
                 <div className="tf-kv-row"><div className="tf-kv-label">Logical Name</div><div className="tf-kv-value">{selectedItem.logicalName || '-'}</div></div>
                 <div className="tf-kv-row"><div className="tf-kv-label">Terraform Address</div><div className="tf-kv-value">{selectedItem.terraformAddress || '-'}</div></div>
@@ -954,10 +2291,299 @@ function DriftTab({
                 <div className="tf-kv-row"><div className="tf-kv-label">Region</div><div className="tf-kv-value">{selectedItem.region || '-'}</div></div>
                 <div className="tf-kv-row"><div className="tf-kv-label">Explanation</div><div className="tf-kv-value">{selectedItem.explanation}</div></div>
                 <div className="tf-kv-row"><div className="tf-kv-label">Suggested Next Step</div><div className="tf-kv-value">{selectedItem.suggestedNextStep}</div></div>
+                <div className="tf-kv-row"><div className="tf-kv-label">Evidence</div><div className="tf-kv-value">{selectedItem.evidence.length > 0 ? selectedItem.evidence.join(' | ') : '-'}</div></div>
+                <div className="tf-kv-row"><div className="tf-kv-label">Related Terraform Addresses</div><div className="tf-kv-value">{selectedItem.relatedTerraformAddresses.length > 0 ? selectedItem.relatedTerraformAddresses.join(', ') : '-'}</div></div>
+                <div className="tf-kv-row"><div className="tf-kv-label">Differences</div><div className="tf-kv-value">{selectedItem.differences.length > 0 ? selectedItem.differences.map((difference) => `${difference.label}: ${difference.terraformValue || '-'} -> ${difference.liveValue || '-'} (${difference.assessment})`).join(' | ') : '-'}</div></div>
               </div>
             </div>
           )}
         </>
+      )}
+      {report && report.history.snapshots.length > 0 && (
+        <div className="tf-section">
+          <div className="tf-section-head">
+            <div>
+              <h3>Snapshot History</h3>
+              <div className="tf-section-hint">
+                Manual re-scans store timestamped snapshots locally under the app user data directory.
+              </div>
+            </div>
+          </div>
+          <div className="tf-resource-table-wrap">
+            <table className="tf-data-table">
+              <thead>
+                <tr>
+                  <th>Scanned</th>
+                  <th>Trigger</th>
+                  <th>Trend Context</th>
+                  <th>Drifted</th>
+                  <th>Missing</th>
+                  <th>Unmanaged</th>
+                  <th>Unsupported</th>
+                  <th>In Sync</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.history.snapshots.slice(0, 8).map((snapshot, index) => (
+                  <tr key={snapshot.id}>
+                    <td>{formatIsoDate(snapshot.scannedAt)}</td>
+                    <td>{snapshot.trigger === 'manual' ? 'Manual re-scan' : 'Initial scan'}</td>
+                    <td>{index === 0 ? DRIFT_TREND_LABELS[report.history.trend] : '-'}</td>
+                    <td>{snapshot.summary.statusCounts.drifted}</td>
+                    <td>{snapshot.summary.statusCounts.missing_in_aws}</td>
+                    <td>{snapshot.summary.statusCounts.unmanaged_in_aws}</td>
+                    <td>{snapshot.summary.statusCounts.unsupported}</td>
+                    <td>{snapshot.summary.statusCounts.in_sync}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {report && report.summary.supportedResourceTypes.length > 0 && (
+        <div className="tf-section">
+          <div className="tf-section-head">
+            <div>
+              <h3>Supported Resource Coverage</h3>
+              <div className="tf-section-hint">
+                Verified checks are direct comparisons. Inferred checks are heuristics, mainly for likely Terraform relationships around unmanaged live resources.
+              </div>
+            </div>
+          </div>
+          <div className="tf-resource-table-wrap">
+            <table className="tf-data-table">
+              <thead>
+                <tr>
+                  <th>Resource Type</th>
+                  <th>Coverage</th>
+                  <th>Verified Checks</th>
+                  <th>Inferred Checks</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.summary.supportedResourceTypes.map((item) => (
+                  <tr key={item.resourceType}>
+                    <td>{item.resourceType}</td>
+                    <td>{item.coverage}</td>
+                    <td>{item.verifiedChecks.join(', ') || '-'}</td>
+                    <td>{item.inferredChecks.join(', ') || '-'}</td>
+                    <td>{item.notes.join(' | ') || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+/* ── History Tab ──────────────────────────────────────────── */
+
+function HistoryTab({ projectId }: { projectId: string }) {
+  const [records, setRecords] = useState<TerraformRunRecord[]>([])
+  const [loading, setLoading] = useState(false)
+  const [selectedRunId, setSelectedRunId] = useState('')
+  const [runOutput, setRunOutput] = useState('')
+  const [outputLoading, setOutputLoading] = useState(false)
+  const [commandFilter, setCommandFilter] = useState<TerraformCommandName | 'all'>('all')
+  const [successFilter, setSuccessFilter] = useState<'all' | 'success' | 'failure'>('all')
+  const [projectFilter, setProjectFilter] = useState<'current' | 'all'>('current')
+
+  const loadHistory = useCallback(async () => {
+    setLoading(true)
+    try {
+      const filter: Record<string, unknown> = {}
+      if (projectFilter === 'current' && projectId) filter.projectId = projectId
+      if (commandFilter !== 'all') filter.command = commandFilter
+      if (successFilter === 'success') filter.success = true
+      if (successFilter === 'failure') filter.success = false
+      const data = await listRunHistory(filter as Parameters<typeof listRunHistory>[0])
+      setRecords(data)
+    } catch {
+      setRecords([])
+    } finally {
+      setLoading(false)
+    }
+  }, [projectId, commandFilter, successFilter, projectFilter])
+
+  useEffect(() => { void loadHistory() }, [loadHistory])
+
+  useEffect(() => {
+    if (!selectedRunId) { setRunOutput(''); return }
+    setOutputLoading(true)
+    void getRunOutput(selectedRunId).then(setRunOutput).catch(() => setRunOutput('')).finally(() => setOutputLoading(false))
+  }, [selectedRunId])
+
+  const selectedRecord = records.find((r) => r.id === selectedRunId)
+
+  function formatDuration(start: string, end: string | null): string {
+    if (!end) return 'running...'
+    const ms = new Date(end).getTime() - new Date(start).getTime()
+    if (ms < 1000) return `${ms}ms`
+    const sec = Math.floor(ms / 1000)
+    if (sec < 60) return `${sec}s`
+    return `${Math.floor(sec / 60)}m ${sec % 60}s`
+  }
+
+  async function handleDelete(id: string) {
+    await deleteRunRecord(id)
+    if (selectedRunId === id) setSelectedRunId('')
+    void loadHistory()
+  }
+
+  const projectNames = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const r of records) map.set(r.projectId, r.projectName)
+    return map
+  }, [records])
+
+  return (
+    <>
+      <div className="tf-section">
+        <h3>Run History</h3>
+        <div className="tf-history-filters">
+          <div className="tf-history-filter-group">
+            <label>Scope</label>
+            <select value={projectFilter} onChange={(e) => setProjectFilter(e.target.value as 'current' | 'all')}>
+              <option value="current">Current Project</option>
+              <option value="all">All Projects</option>
+            </select>
+          </div>
+          <div className="tf-history-filter-group">
+            <label>Command</label>
+            <select value={commandFilter} onChange={(e) => setCommandFilter(e.target.value as TerraformCommandName | 'all')}>
+              <option value="all">All</option>
+              <option value="init">init</option>
+              <option value="plan">plan</option>
+              <option value="apply">apply</option>
+              <option value="destroy">destroy</option>
+              <option value="import">import</option>
+              <option value="state-mv">state mv</option>
+              <option value="state-rm">state rm</option>
+              <option value="force-unlock">force-unlock</option>
+            </select>
+          </div>
+          <div className="tf-history-filter-group">
+            <label>Result</label>
+            <select value={successFilter} onChange={(e) => setSuccessFilter(e.target.value as 'all' | 'success' | 'failure')}>
+              <option value="all">All</option>
+              <option value="success">Success</option>
+              <option value="failure">Failure</option>
+            </select>
+          </div>
+          <button className="tf-toolbar-btn" onClick={() => void loadHistory()} style={{ alignSelf: 'flex-end' }}>Refresh</button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="tf-empty">Loading history...</div>
+      ) : records.length === 0 ? (
+        <div className="tf-empty">No run history found.</div>
+      ) : (
+        <div className="tf-history-layout">
+          <div className="tf-history-list">
+            <table className="tf-data-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  {projectFilter === 'all' && <th>Project</th>}
+                  <th>Command</th>
+                  <th>Workspace</th>
+                  <th>Result</th>
+                  <th>Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                {records.map((r) => (
+                  <tr key={r.id} className={r.id === selectedRunId ? 'active' : ''} onClick={() => setSelectedRunId(r.id)}>
+                    <td title={r.startedAt}>{formatIsoDate(r.startedAt)}</td>
+                    {projectFilter === 'all' && <td title={r.projectName}>{r.projectName}</td>}
+                    <td><span className={`tf-history-cmd ${r.command}`}>{r.command}</span></td>
+                    <td>{r.workspace}</td>
+                    <td>
+                      {r.success === null
+                        ? <span className="tf-history-result running">running</span>
+                        : r.success
+                          ? <span className="tf-history-result success">success</span>
+                          : <span className="tf-history-result failure">failed</span>
+                      }
+                    </td>
+                    <td>{formatDuration(r.startedAt, r.finishedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {selectedRecord && (
+            <div className="tf-history-detail">
+              <div className="tf-section">
+                <div className="tf-section-head">
+                  <h3>Run Detail</h3>
+                  <button className="tf-toolbar-btn danger" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => void handleDelete(selectedRecord.id)}>Delete</button>
+                </div>
+                <div className="tf-kv">
+                  <div className="tf-kv-row"><div className="tf-kv-label">Command</div><div className="tf-kv-value">{selectedRecord.command}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Project</div><div className="tf-kv-value">{selectedRecord.projectName}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Workspace</div><div className="tf-kv-value"><span className="tf-workspace-badge">{selectedRecord.workspace}</span></div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Region</div><div className="tf-kv-value">{selectedRecord.region || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Connection</div><div className="tf-kv-value">{selectedRecord.connectionLabel || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Backend</div><div className="tf-kv-value">{selectedRecord.backendType}</div></div>
+                  {selectedRecord.git && (
+                    <>
+                      <div className="tf-kv-row"><div className="tf-kv-label">Git Head</div><div className="tf-kv-value">{formatGitHead(selectedRecord.git.branch, selectedRecord.git.shortCommitSha, selectedRecord.git.isDetached)}</div></div>
+                      <div className="tf-kv-row"><div className="tf-kv-label">Git Tree</div><div className="tf-kv-value">{selectedRecord.git.isDirty ? 'Dirty' : 'Clean'}</div></div>
+                      <div className="tf-kv-row"><div className="tf-kv-label">Repo Root</div><div className="tf-kv-value">{selectedRecord.git.repoRoot}</div></div>
+                    </>
+                  )}
+                  <div className="tf-kv-row"><div className="tf-kv-label">State Source</div><div className="tf-kv-value">{selectedRecord.stateSource || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Started</div><div className="tf-kv-value">{selectedRecord.startedAt}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Finished</div><div className="tf-kv-value">{selectedRecord.finishedAt || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Duration</div><div className="tf-kv-value">{formatDuration(selectedRecord.startedAt, selectedRecord.finishedAt)}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Exit Code</div><div className="tf-kv-value">{selectedRecord.exitCode ?? '-'}</div></div>
+                  {selectedRecord.stateOperationSummary && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">State Op</div><div className="tf-kv-value">{selectedRecord.stateOperationSummary}</div></div>
+                  )}
+                  {selectedRecord.backupPath && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">Backup</div><div className="tf-kv-value">{selectedRecord.backupPath}</div></div>
+                  )}
+                  {selectedRecord.backupCreatedAt && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">Backup Time</div><div className="tf-kv-value">{formatIsoDate(selectedRecord.backupCreatedAt)}</div></div>
+                  )}
+                  <div className="tf-kv-row">
+                    <div className="tf-kv-label">Result</div>
+                    <div className="tf-kv-value">
+                      {selectedRecord.success === null ? 'Running' : selectedRecord.success ? 'Success' : 'Failed'}
+                    </div>
+                  </div>
+                  {selectedRecord.args.length > 0 && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">Args</div><div className="tf-kv-value" style={{ fontFamily: '"Cascadia Code","Fira Code",monospace', fontSize: 11 }}>{selectedRecord.args.join(' ')}</div></div>
+                  )}
+                </div>
+                {selectedRecord.planSummary && (
+                  <div className="tf-summary" style={{ marginTop: 12 }}>
+                    <span className="tf-summary-item"><span className="tf-summary-count create">{selectedRecord.planSummary.create}</span> create</span>
+                    <span className="tf-summary-item"><span className="tf-summary-count update">{selectedRecord.planSummary.update}</span> update</span>
+                    <span className="tf-summary-item"><span className="tf-summary-count delete">{selectedRecord.planSummary.delete}</span> delete</span>
+                    <span className="tf-summary-item"><span className="tf-summary-count replace">{selectedRecord.planSummary.replace}</span> replace</span>
+                  </div>
+                )}
+              </div>
+              <div className="tf-section">
+                <h3>Output</h3>
+                {outputLoading ? (
+                  <div className="tf-empty">Loading output...</div>
+                ) : (
+                  <div className="tf-output-panel">{runOutput || '(no output)'}</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </>
   )
@@ -976,17 +2602,28 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
   const [driftReport, setDriftReport] = useState<TerraformDriftReport | null>(null)
   const [driftLoading, setDriftLoading] = useState(false)
   const [driftError, setDriftError] = useState('')
-  const [driftStatusFilter, setDriftStatusFilter] = useState<'all' | Exclude<TerraformDriftStatus, 'unsupported'>>('all')
+  const [driftStatusFilter, setDriftStatusFilter] = useState<'all' | TerraformDriftStatus>('all')
   const [driftTypeFilter, setDriftTypeFilter] = useState('all')
   const [selectedDriftKey, setSelectedDriftKey] = useState('')
   const [labReport, setLabReport] = useState<ObservabilityPostureReport | null>(null)
   const [labLoading, setLabLoading] = useState(false)
   const [labError, setLabError] = useState('')
 
+  // Governance
+  const [governanceToolkit, setGovernanceToolkit] = useState<TerraformGovernanceToolkit | null>(null)
+  const [governanceReport, setGovernanceReport] = useState<TerraformGovernanceReport | null>(null)
+  const [governanceRunning, setGovernanceRunning] = useState(false)
+
   // Dialogs
   const [showInputs, setShowInputs] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [showCreateWorkspaceDialog, setShowCreateWorkspaceDialog] = useState(false)
+  const [showDeleteWorkspaceDialog, setShowDeleteWorkspaceDialog] = useState(false)
   const [prefillMissing, setPrefillMissing] = useState<string[]>([])
-  const [resumeCommandAfterInputs, setResumeCommandAfterInputs] = useState<null | 'plan' | 'apply' | 'destroy'>(null)
+  const [resumeCommandAfterInputs, setResumeCommandAfterInputs] = useState<null | {
+    command: 'plan' | 'apply' | 'destroy'
+    planOptions?: TerraformPlanOptions
+  }>(null)
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string; description: string; confirmWord: string; onConfirm: () => void
   } | null>(null)
@@ -1001,6 +2638,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
 
   const cliOk = cliInfo?.found === true
   const contextKey = terraformContextKey(connection)
+  const projectConnection = connectionForProject(connection, detail)
 
   // Detect CLI on mount
   useEffect(() => {
@@ -1025,21 +2663,21 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const list = await listProjects(contextKey)
+      const list = await listProjects(contextKey, connection)
       setProjectsList(list)
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [contextKey])
+  }, [connection, contextKey])
 
   useEffect(() => { void reload() }, [reload])
 
   // Load detail when selected
   useEffect(() => {
     if (!selectedId) { setDetail(null); setDriftReport(null); return }
-    void getProject(contextKey, selectedId).then((p) => {
+    void getProject(contextKey, selectedId, connection).then((p) => {
       setDetail(p)
       setDriftReport(null)
       setDriftError('')
@@ -1048,14 +2686,14 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       setLabError('')
       void setSelectedProjectId(contextKey, selectedId)
     }).catch(() => setDetail(null))
-  }, [contextKey, selectedId])
+  }, [connection, contextKey, selectedId])
 
-  const loadDrift = useCallback(async () => {
+  const loadDrift = useCallback(async (options?: { forceRefresh?: boolean }) => {
     if (!detail) return
     setDriftLoading(true)
     setDriftError('')
     try {
-      const report = await getDrift(contextKey, detail.id, connection)
+      const report = await getDrift(contextKey, detail.id, projectConnection, options)
       setDriftReport(report)
       setSelectedDriftKey((current) => current || (report.items[0] ? driftItemKey(report.items[0]) : ''))
     } catch (err) {
@@ -1063,13 +2701,29 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     } finally {
       setDriftLoading(false)
     }
-  }, [connection, detail])
+  }, [contextKey, detail, projectConnection])
+
+  const detailTabRef = useRef(detailTab)
+  const loadDriftRef = useRef(loadDrift)
+  const reloadRef = useRef(reload)
+
+  useEffect(() => {
+    detailTabRef.current = detailTab
+  }, [detailTab])
+
+  useEffect(() => {
+    loadDriftRef.current = loadDrift
+  }, [loadDrift])
+
+  useEffect(() => {
+    reloadRef.current = reload
+  }, [reload])
 
   useEffect(() => {
     if (detailTab !== 'drift' || !detail) return
-    if (driftReport?.projectId === detail.id && driftReport.region === connection.region) return
+    if (driftReport?.projectId === detail.id && driftReport.region === projectConnection.region) return
     void loadDrift()
-  }, [connection.region, detail, detailTab, driftReport, loadDrift])
+  }, [detail, detailTab, driftReport, loadDrift, projectConnection.region])
 
   const loadLab = useCallback(async () => {
     if (!detail) return
@@ -1091,6 +2745,38 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     void loadLab()
   }, [detail, detailTab, labReport, loadLab])
 
+  // Governance: detect tools once on CLI detect
+  useEffect(() => {
+    if (cliOk && !governanceToolkit?.detectedAt) {
+      void detectGovernanceTools(cliInfo?.path).then(setGovernanceToolkit).catch(() => {})
+    }
+  }, [cliOk, cliInfo?.path, governanceToolkit?.detectedAt])
+
+  // Governance: clear report when switching projects
+  useEffect(() => {
+    setGovernanceReport(null)
+  }, [selectedId])
+
+  const handleDetectGovernanceTools = useCallback(async () => {
+    try {
+      const tk = await detectGovernanceTools(cliInfo?.path)
+      setGovernanceToolkit(tk)
+    } catch { /* ignore */ }
+  }, [cliInfo?.path])
+
+  const handleRunGovernanceChecks = useCallback(async () => {
+    if (!detail) return
+    setGovernanceRunning(true)
+    try {
+      const report = await runGovernanceChecks(contextKey, detail.id, connection)
+      setGovernanceReport(report)
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGovernanceRunning(false)
+    }
+  }, [connection, contextKey, detail])
+
   // Subscribe to terraform events
   useEffect(() => {
     function handleEvent(event: unknown) {
@@ -1102,7 +2788,19 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
         const log = e.log as TerraformCommandLog
         setLastLog(log)
         if (e.project) setDetail(e.project as TerraformProject)
-        void reload()
+        const refreshesDrift = log.success && ['apply', 'destroy', 'import', 'state-mv', 'state-rm'].includes(log.command)
+        if (refreshesDrift) {
+          setDriftReport(null)
+          setDriftError('')
+          setSelectedDriftKey('')
+          if (detailTabRef.current === 'drift') {
+            void loadDriftRef.current({ forceRefresh: true })
+          }
+        }
+        if (log.success && ['import', 'state-mv', 'state-rm', 'force-unlock'].includes(log.command)) {
+          setMsg(`Completed ${log.command}. Project state views were reloaded.`)
+        }
+        void reloadRef.current()
       } else if (e.type === 'started') {
         setRunning(true)
         setShowProgress(true)
@@ -1132,14 +2830,14 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     }
     subscribe(handleEvent)
     return () => unsubscribe(handleEvent)
-  }, [reload])
+  }, [])
 
   // Handlers
   async function handleAddProject() {
     const dir = await chooseProjectDirectory()
     if (!dir) return
     try {
-      const project = await addProject(contextKey, dir)
+      const project = await addProject(contextKey, dir, connection)
       await reload()
       setSelectedId(project.id)
       setMsg('')
@@ -1160,11 +2858,72 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     }
   }
 
+  async function handleRenameProject(name: string) {
+    if (!detail) return
+    try {
+      const updated = await renameProject(contextKey, detail.id, name)
+      setDetail(updated)
+      setShowRenameDialog(false)
+      setMsg('')
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleOpenInVsCode() {
+    if (!detail) return
+    try {
+      await openProjectInVsCode(detail.rootPath)
+      setMsg('Opened Terraform project in VS Code')
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function handleReload() {
     if (!selectedId) { await reload(); return }
     try {
-      const p = await reloadProject(contextKey, selectedId)
+      const p = await reloadProject(contextKey, selectedId, connection)
       setDetail(p)
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleSelectWorkspace(workspaceName: string) {
+    if (!detail || running || workspaceName === detail.currentWorkspace) return
+    try {
+      const updated = await selectWorkspace(contextKey, detail.id, workspaceName, connection)
+      setDetail(updated)
+      setMsg(`Switched to workspace ${updated.currentWorkspace}`)
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleCreateWorkspace(workspaceName: string) {
+    if (!detail) return
+    try {
+      const updated = await createWorkspace(contextKey, detail.id, workspaceName, connection)
+      setDetail(updated)
+      setShowCreateWorkspaceDialog(false)
+      setMsg(`Created workspace ${updated.currentWorkspace}`)
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleDeleteWorkspace(workspaceName: string) {
+    if (!detail) return
+    try {
+      const updated = await deleteWorkspace(contextKey, detail.id, workspaceName, connection)
+      setDetail(updated)
+      setShowDeleteWorkspaceDialog(false)
+      setMsg(`Deleted workspace ${workspaceName}`)
       await reload()
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err))
@@ -1178,10 +2937,10 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     setShowInputs(true)
   }
 
-  async function handleSaveInputs(variables: Record<string, unknown>, varFile: string) {
+  async function handleSaveInputs(inputConfig: TerraformInputConfiguration) {
     if (!detail) return
     try {
-      const updated = await updateInputs(contextKey, detail.id, variables, varFile)
+      const updated = await updateInputs(contextKey, detail.id, inputConfig, connection)
       setDetail(updated)
       setShowInputs(false)
       setPrefillMissing([])
@@ -1190,12 +2949,18 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       setResumeCommandAfterInputs(null)
       await reload()
       if (commandToResume) {
-        const log = await runCommand({ profileName: contextKey, connection, projectId: updated.id, command: commandToResume })
+        const log = await runCommand({
+          profileName: contextKey,
+          connection,
+          projectId: updated.id,
+          command: commandToResume.command,
+          ...(commandToResume.command === 'plan' ? { planOptions: commandToResume.planOptions } : {})
+        })
         setLastLog(log)
-        const refreshed = await reloadProject(contextKey, updated.id)
+        const refreshed = await reloadProject(contextKey, updated.id, connection)
         setDetail(refreshed)
         await reload()
-        if (log.success && commandToResume === 'plan') {
+        if (log.success && commandToResume.command === 'plan') {
           setMsg('')
           setDetailTab('actions')
         }
@@ -1205,11 +2970,11 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     }
   }
 
-  async function execCommand(command: 'init' | 'plan' | 'apply' | 'destroy'): Promise<TerraformCommandLog | null> {
+  async function execCommand(command: 'init' | 'plan' | 'apply' | 'destroy', planOptions?: TerraformPlanOptions): Promise<TerraformCommandLog | null> {
     if (!detail || running) return null
     setMsg('')
     try {
-      const log = await runCommand({ profileName: contextKey, connection, projectId: detail.id, command })
+      const log = await runCommand({ profileName: contextKey, connection, projectId: detail.id, command, ...(command === 'plan' ? { planOptions } : {}) })
       // Handle missing vars
       if (!log.success && log.output) {
         const { missing, invalid } = await detectMissingVars(log.output)
@@ -1233,23 +2998,26 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
   }
 
   function handleInit() { void execCommand('init') }
-  function handlePlan() {
+  function handlePlan(options?: TerraformPlanOptions) {
     if (!detail || running) return
-    void getMissingRequiredInputs(contextKey, detail.id)
-      .then((missing) => {
-        const unresolved = uniqueStrings(missing)
-        if (unresolved.length > 0) {
-          setPrefillMissing(unresolved)
-          setResumeCommandAfterInputs('plan')
+    void validateProjectInputs(contextKey, detail.id, connection)
+      .then((validation) => {
+        const unresolved = uniqueStrings([
+          ...validation.missing,
+          ...validation.unresolvedSecrets.map((item) => item.name)
+        ])
+        if (!validation.valid && unresolved.length > 0) {
+          setPrefillMissing(validation.missing)
+          setResumeCommandAfterInputs({ command: 'plan', planOptions: options })
           setMsg(
             unresolved.length === 1
-              ? `Missing required Terraform variable: ${unresolved[0]}. The Inputs dialog is open so you can provide it.`
-              : `Missing required Terraform variables: ${unresolved.join(', ')}. The Inputs dialog is open so you can provide them.`
+              ? `Terraform input needs attention: ${unresolved[0]}. The Inputs dialog is open so you can fix it.`
+              : `Terraform inputs need attention: ${unresolved.join(', ')}. The Inputs dialog is open so you can fix them.`
           )
           setShowInputs(true)
           return null
         }
-        return execCommand('plan')
+        return execCommand('plan', options)
       })
       .then((log) => {
         if (log) {
@@ -1267,6 +3035,12 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       setMsg('Run Plan first to create a saved plan before applying.')
       return
     }
+    // Block apply when governance blocking checks have failed
+    if (governanceReport && !governanceReport.allBlockingPassed) {
+      setMsg('Apply is blocked: one or more required governance checks failed. Fix the issues and re-run Safety Checks.')
+      return
+    }
+    const applyWarning = planCommitMismatchWarning(detail)
     // Has saved plan - go directly to summary with resource list
     setSummaryDialog({
       title: 'Apply Changes — Review',
@@ -1276,7 +3050,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
         setSummaryDialog(null)
         setConfirmDialog({
           title: 'Confirm Apply',
-          description: `You are about to apply ${detail.lastPlanSummary.create} create, ${detail.lastPlanSummary.update} update, ${detail.lastPlanSummary.delete} delete, ${detail.lastPlanSummary.replace} replace. This action cannot be easily undone.`,
+          description: `${applyWarning ? `${applyWarning}\n\n` : ''}You are about to apply ${detail.lastPlanSummary.create} create, ${detail.lastPlanSummary.update} update, ${detail.lastPlanSummary.delete} delete, ${detail.lastPlanSummary.replace} replace. This action cannot be easily undone.`,
           confirmWord: 'APPLY',
           onConfirm: () => {
             setConfirmDialog(null)
@@ -1293,11 +3067,43 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       setMsg('Run Plan first to create a saved plan before destroying.')
       return
     }
+    // Block destroy when governance blocking checks have failed
+    if (governanceReport && !governanceReport.allBlockingPassed) {
+      setMsg('Destroy is blocked: one or more required governance checks failed. Fix the issues and re-run Safety Checks.')
+      return
+    }
     // First confirmation: show what will be destroyed
-    const destroySummary = { create: 0, update: 0, delete: detail.stateAddresses.length, replace: 0, noop: 0 }
+    const destroySummary = {
+      ...emptyPlanSummary('standard'),
+      delete: detail.stateAddresses.length,
+      hasChanges: detail.stateAddresses.length > 0,
+      affectedResources: detail.stateAddresses.length,
+      affectedModules: ['root'],
+      hasDestructiveChanges: detail.stateAddresses.length > 0,
+      isDeleteHeavy: detail.stateAddresses.length > 0
+    }
     const destroyChanges: TerraformPlanChange[] = detail.stateAddresses.map(addr => {
       const parts = addr.split('.')
-      return { address: addr, type: parts[0] ?? addr, name: parts.slice(1).join('.'), modulePath: '', provider: '', actions: ['delete'], actionLabel: 'delete' }
+      const type = parts[0] ?? addr
+      return {
+        address: addr,
+        type,
+        name: parts.slice(1).join('.'),
+        modulePath: 'root',
+        provider: '',
+        providerDisplayName: '',
+        service: type.startsWith('aws_') ? type.replace(/^aws_/, '').split('_')[0] : 'unknown',
+        actions: ['delete'],
+        actionLabel: 'delete',
+        mode: 'managed',
+        actionReason: 'destroy',
+        replacePaths: [],
+        changedAttributes: [],
+        beforeIdentity: addr,
+        afterIdentity: 'destroyed',
+        isDestructive: true,
+        isReplacement: false
+      }
     })
     setSummaryDialog({
       title: 'Destroy Infrastructure — Review',
@@ -1315,6 +3121,77 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
             void execCommand('destroy')
           }
         })
+      }
+    })
+  }
+
+  async function execStateCommand(request: {
+    command: 'import' | 'state-mv' | 'state-rm' | 'force-unlock'
+    importAddress?: string
+    importId?: string
+    stateAddress?: string
+    stateFromAddress?: string
+    stateToAddress?: string
+    lockId?: string
+  }) {
+    if (!detail || running) return
+    setMsg('')
+    setDriftReport(null)
+    setDriftError('')
+    setLabReport(null)
+    setLabError('')
+    try {
+      const log = await runCommand({
+        profileName: contextKey,
+        connection,
+        projectId: detail.id,
+        ...request
+      })
+      setLastLog(log)
+      if (!log.success) {
+        setMsg(`State operation failed: ${log.output.split('\n').slice(-1)[0] || 'see output for details'}`)
+      }
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  function handleStateImport(address: string, importId: string) {
+    void execStateCommand({ command: 'import', importAddress: address, importId })
+  }
+
+  function handleStateMove(fromAddress: string, toAddress: string) {
+    setConfirmDialog({
+      title: 'Confirm State Move',
+      description: `Move Terraform state from ${fromAddress} to ${toAddress}. A local backup will be captured first.`,
+      confirmWord: 'MOVE',
+      onConfirm: () => {
+        setConfirmDialog(null)
+        void execStateCommand({ command: 'state-mv', stateFromAddress: fromAddress, stateToAddress: toAddress })
+      }
+    })
+  }
+
+  function handleStateRemove(address: string) {
+    setConfirmDialog({
+      title: 'Confirm State Remove',
+      description: `Remove ${address} from Terraform state without deleting the provider resource. A local backup will be captured first.`,
+      confirmWord: 'REMOVE',
+      onConfirm: () => {
+        setConfirmDialog(null)
+        void execStateCommand({ command: 'state-rm', stateAddress: address })
+      }
+    })
+  }
+
+  function handleForceUnlock(lockId: string) {
+    setConfirmDialog({
+      title: 'Confirm Force Unlock',
+      description: `Force-unlock Terraform state lock ${lockId}. Only continue if no active Terraform operation still owns the lock. A local backup will be captured first.`,
+      confirmWord: 'UNLOCK',
+      onConfirm: () => {
+        setConfirmDialog(null)
+        void execStateCommand({ command: 'force-unlock', lockId })
       }
     })
   }
@@ -1354,6 +3231,8 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       {/* Toolbar */}
       <div className="tf-toolbar">
         <button className="tf-toolbar-btn accent" onClick={handleAddProject} disabled={!cliOk}>Add Project</button>
+        <button className="tf-toolbar-btn" onClick={() => setShowRenameDialog(true)} disabled={!detail}>Rename</button>
+        <button className="tf-toolbar-btn" onClick={() => void handleOpenInVsCode()} disabled={!detail}>Open in VS Code</button>
         <button className="tf-toolbar-btn danger" onClick={handleRemoveProject} disabled={!selectedId}>Remove Project</button>
         <button className="tf-toolbar-btn" onClick={handleReload} disabled={loading}>Reload</button>
         <button className="tf-toolbar-btn" onClick={handleShowInputs} disabled={!detail}>Inputs</button>
@@ -1406,37 +3285,106 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
               {/* Detail tabs */}
               <div className="tf-detail-tabs">
                 <button className={detailTab === 'actions' ? 'active' : ''} onClick={() => setDetailTab('actions')}>Actions</button>
+                <button className={detailTab === 'state' ? 'active' : ''} onClick={() => setDetailTab('state')}>State</button>
                 <button className={detailTab === 'resources' ? 'active' : ''} onClick={() => setDetailTab('resources')}>Resources</button>
                 <button className={detailTab === 'drift' ? 'active' : ''} onClick={() => setDetailTab('drift')}>Drift</button>
                 <button className={detailTab === 'lab' ? 'active' : ''} onClick={() => setDetailTab('lab')}>Lab</button>
+                <button className={detailTab === 'history' ? 'active' : ''} onClick={() => setDetailTab('history')}>History</button>
               </div>
 
               {/* Project info */}
               <div className="tf-section">
-                <div className="tf-kv">
-                  <div className="tf-kv-row"><div className="tf-kv-label">Name</div><div className="tf-kv-value">{detail.name}</div></div>
+                <details className="tf-collapsible">
+                  <summary className="tf-collapsible-summary">Project Info</summary>
+                  <div className="tf-kv tf-collapsible-body">
+                    <div className="tf-kv-row"><div className="tf-kv-label">Name</div><div className="tf-kv-value">{detail.name}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Path</div><div className="tf-kv-value">{detail.rootPath}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Environment</div><div className="tf-kv-value">{detail.environment.environmentLabel}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Workspace</div><div className="tf-kv-value"><span className="tf-workspace-badge">{detail.currentWorkspace}</span></div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Overlay</div><div className="tf-kv-value">{detail.inputView.selectedOverlay || '-'}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Backend</div><div className="tf-kv-value">{detail.metadata.backendType}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Backend Detail</div><div className="tf-kv-value">{detail.metadata.backend.label}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Git</div><div className="tf-kv-value">{gitStatusSummary(detail)}</div></div>
+                  {detail.metadata.git?.status === 'ready' && (
+                    <>
+                      <div className="tf-kv-row"><div className="tf-kv-label">Repo Root</div><div className="tf-kv-value">{detail.metadata.git.repoRoot}</div></div>
+                      <div className="tf-kv-row"><div className="tf-kv-label">Repo Path</div><div className="tf-kv-value">{detail.metadata.git.projectRelativePath}</div></div>
+                      {detail.savedPlanMetadata?.git && (
+                        <div className="tf-kv-row"><div className="tf-kv-label">Saved Plan Git</div><div className="tf-kv-value">{formatGitHead(detail.savedPlanMetadata.git.branch, detail.savedPlanMetadata.git.shortCommitSha, detail.savedPlanMetadata.git.isDetached)}{detail.savedPlanMetadata.git.isDirty ? ' • dirty' : ''}</div></div>
+                      )}
+                    </>
+                  )}
+                  {'effectiveStateKey' in detail.metadata.backend && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">State Key</div><div className="tf-kv-value">{detail.metadata.backend.effectiveStateKey}</div></div>
+                  )}
+                  {'stateLocation' in detail.metadata.backend && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">State Path</div><div className="tf-kv-value">{detail.metadata.backend.stateLocation}</div></div>
+                  )}
+                  <div className="tf-kv-row"><div className="tf-kv-label">Region</div><div className="tf-kv-value">{detail.environment.region || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Profile/Session</div><div className="tf-kv-value">{detail.environment.connectionLabel || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Var Set</div><div className="tf-kv-value">{detail.environment.varSetLabel || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Input Status</div><div className="tf-kv-value">{detail.inputValidation.valid ? 'Ready' : `Needs attention (${detail.inputValidation.missing.length + detail.inputValidation.unresolvedSecrets.length})`}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Providers</div><div className="tf-kv-value">{detail.metadata.providerNames.join(', ') || '-'}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">TF Files</div><div className="tf-kv-value">{detail.metadata.tfFileCount}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Resources</div><div className="tf-kv-value">{detail.metadata.resourceCount}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Variables</div><div className="tf-kv-value">{detail.metadata.variableCount}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Var File</div><div className="tf-kv-value">{detail.varFile || '-'}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">State Source</div><div className="tf-kv-value">{detail.stateSource || 'none'}</div></div>
-                </div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Latest Backup</div><div className="tf-kv-value">{detail.latestStateBackup ? formatIsoDate(detail.latestStateBackup.createdAt) : 'none yet'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Backup Folder</div><div className="tf-kv-value">{detail.latestStateBackup?.path || 'created on first destructive state operation'}</div></div>
+                  {detail.metadata.git?.status === 'ready' && detail.metadata.git.changedTerraformFiles.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <div className="tf-section-hint">Changed Terraform files in this project checkout</div>
+                      <div className="tf-kv" style={{ marginTop: 8 }}>
+                        {detail.metadata.git.changedTerraformFiles.map((file) => (
+                          <div key={`${file.status}:${file.path}`} className="tf-kv-row">
+                            <div className="tf-kv-label">{file.status}</div>
+                            <div className="tf-kv-value">{file.path}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  </div>
+                </details>
               </div>
+
+              <WorkspaceControls
+                project={detail}
+                running={running}
+                onSelectWorkspace={handleSelectWorkspace}
+                onCreateWorkspace={() => setShowCreateWorkspaceDialog(true)}
+                onDeleteWorkspace={() => setShowDeleteWorkspaceDialog(true)}
+              />
 
               {detailTab === 'actions' && (
                 <ActionsTab
                   project={detail}
                   cliOk={cliOk}
                   running={running}
-                lastLog={lastLog}
-                onInit={handleInit}
-                onPlan={handlePlan}
-                onApply={handleApply}
-                onDestroy={handleDestroy}
+                  lastLog={lastLog}
+                  onInit={handleInit}
+                  onPlan={handlePlan}
+                  onApply={handleApply}
+                  onDestroy={handleDestroy}
+                  governanceToolkit={governanceToolkit}
+                  governanceReport={governanceReport}
+                  governanceRunning={governanceRunning}
+                  onRunGovernanceChecks={handleRunGovernanceChecks}
+                  onDetectGovernanceTools={handleDetectGovernanceTools}
               />
+              )}
+              {detailTab === 'state' && (
+                <StateTab
+                  project={detail}
+                  running={running}
+                  lastLog={lastLog}
+                  onImport={handleStateImport}
+                  onMove={handleStateMove}
+                  onRemove={handleStateRemove}
+                  onUnlock={handleForceUnlock}
+                  onReload={() => void handleReload()}
+                />
               )}
               {detailTab === 'resources' && <ResourcesTab project={detail} />}
               {detailTab === 'drift' && (
@@ -1450,7 +3398,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
                   onStatusFilterChange={setDriftStatusFilter}
                   onTypeFilterChange={setDriftTypeFilter}
                   onSelectItem={setSelectedDriftKey}
-                  onRefresh={() => void loadDrift()}
+                  onRefresh={() => void loadDrift({ forceRefresh: true })}
                   onOpenConsole={handleOpenDriftConsole}
                   onRunStateShow={handleRunDriftStateShow}
                 />
@@ -1465,6 +3413,9 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
                   onNavigateSignal={handleLabSignalNavigate}
                 />
               )}
+              {detailTab === 'history' && (
+                <HistoryTab projectId={detail.id} />
+              )}
             </>
           )}
         </div>
@@ -1477,6 +3428,30 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
           onSave={handleSaveInputs}
           onClose={() => { setShowInputs(false); setPrefillMissing([]) }}
           prefillMissing={prefillMissing.length > 0 ? prefillMissing : undefined}
+        />
+      )}
+
+      {showRenameDialog && detail && (
+        <RenameProjectDialog
+          currentName={detail.name}
+          onSave={(name) => void handleRenameProject(name)}
+          onClose={() => setShowRenameDialog(false)}
+        />
+      )}
+
+      {showCreateWorkspaceDialog && detail && (
+        <WorkspaceCreateDialog
+          currentWorkspace={detail.currentWorkspace}
+          onCreate={(workspaceName) => void handleCreateWorkspace(workspaceName)}
+          onClose={() => setShowCreateWorkspaceDialog(false)}
+        />
+      )}
+
+      {showDeleteWorkspaceDialog && detail && (
+        <WorkspaceDeleteDialog
+          workspaces={detail.workspaces}
+          onDelete={(workspaceName) => void handleDeleteWorkspace(workspaceName)}
+          onClose={() => setShowDeleteWorkspaceDialog(false)}
         />
       )}
 
