@@ -57,6 +57,10 @@
   min-width: 0;
 }
 
+.ecs-diagnostics-layout.full-width {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .ecs-diagnostics-main {
   display: flex;
   flex-direction: column;
