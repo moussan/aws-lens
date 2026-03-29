@@ -18,7 +18,8 @@ import type {
   TerraformPlanChange,
   TerraformProject,
   TerraformProjectListItem,
-  TerraformResourceRow
+  TerraformResourceRow,
+  TerraformWorkspaceSummary
 } from '@shared/types'
 import { openExternalUrl } from './api'
 import {
@@ -26,16 +27,21 @@ import {
   chooseProjectDirectory,
   chooseVarFile,
   clearSavedPlan,
+  createWorkspace,
   detectCli,
   detectMissingVars,
+  deleteWorkspace,
   getDrift,
   getObservabilityReport,
   getProject,
   getMissingRequiredInputs,
   listProjects,
+  openProjectInVsCode,
   reloadProject,
   removeProject,
+  renameProject,
   runCommand,
+  selectWorkspace,
   setSelectedProjectId,
   subscribe,
   unsubscribe,
@@ -162,6 +168,134 @@ function InputsDialog({
         <div className="tf-inputs-buttons">
           <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
           <button type="button" className="tf-toolbar-btn accent" onClick={handleSave}>Save</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RenameProjectDialog({
+  currentName,
+  onSave,
+  onClose
+}: {
+  currentName: string
+  onSave: (name: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(currentName)
+  const trimmed = name.trim()
+
+  return (
+    <div className="tf-inputs-overlay" onClick={onClose}>
+      <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>Rename Terraform Project</h3>
+        <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
+          This only changes the project label shown inside the app. The folder path is unchanged.
+        </p>
+        <label>
+          Project Name
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        <div className="tf-inputs-buttons">
+          <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="tf-toolbar-btn accent" onClick={() => onSave(trimmed)} disabled={!trimmed}>Save</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WorkspaceCreateDialog({
+  currentWorkspace,
+  onCreate,
+  onClose
+}: {
+  currentWorkspace: string
+  onCreate: (workspaceName: string) => void
+  onClose: () => void
+}) {
+  const [workspaceName, setWorkspaceName] = useState('')
+  const trimmed = workspaceName.trim()
+
+  return (
+    <div className="tf-inputs-overlay" onClick={onClose}>
+      <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>Create Workspace</h3>
+        <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
+          Terraform will create the workspace and switch from <strong>{currentWorkspace}</strong> to the new one.
+        </p>
+        <label>
+          Workspace Name
+          <input value={workspaceName} onChange={(e) => setWorkspaceName(e.target.value)} autoFocus placeholder="staging" />
+        </label>
+        <div className="tf-inputs-buttons">
+          <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
+          <button type="button" className="tf-toolbar-btn accent" onClick={() => onCreate(trimmed)} disabled={!trimmed}>Create Workspace</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function WorkspaceDeleteDialog({
+  workspaces,
+  onDelete,
+  onClose
+}: {
+  workspaces: TerraformWorkspaceSummary[]
+  onDelete: (workspaceName: string) => void
+  onClose: () => void
+}) {
+  const deletable = workspaces.filter((workspace) => !workspace.isCurrent && workspace.name !== 'default')
+  const [selectedWorkspace, setSelectedWorkspace] = useState(deletable[0]?.name ?? '')
+  const [typed, setTyped] = useState('')
+
+  if (deletable.length === 0) {
+    return (
+      <div className="tf-inputs-overlay" onClick={onClose}>
+        <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
+          <h3>Delete Workspace</h3>
+          <p style={{ margin: 0, fontSize: 12, color: '#9ca7b7' }}>
+            Only non-default workspaces that are not currently selected can be deleted.
+          </p>
+          <div className="tf-inputs-buttons">
+            <button type="button" className="tf-toolbar-btn" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="tf-inputs-overlay" onClick={onClose}>
+      <div className="tf-inputs-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3>Delete Workspace</h3>
+        <p style={{ margin: 0, fontSize: 12, color: '#ffb3aa' }}>
+          This removes the Terraform workspace reference. Terraform will refuse if the backend still has protected state constraints.
+        </p>
+        <label>
+          Workspace
+          <select value={selectedWorkspace} onChange={(e) => { setSelectedWorkspace(e.target.value); setTyped('') }}>
+            {deletable.map((workspace) => (
+              <option key={workspace.name} value={workspace.name}>{workspace.name}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Type Workspace Name To Confirm
+          <input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+        </label>
+        <div className="tf-inputs-buttons">
+          <button type="button" className="tf-toolbar-btn" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="tf-toolbar-btn danger"
+            onClick={() => onDelete(selectedWorkspace)}
+            disabled={!selectedWorkspace || typed !== selectedWorkspace}
+          >
+            Delete Workspace
+          </button>
         </div>
       </div>
     </div>
@@ -746,6 +880,49 @@ function ActionsTab({
   )
 }
 
+function WorkspaceControls({
+  project,
+  running,
+  onSelectWorkspace,
+  onCreateWorkspace,
+  onDeleteWorkspace
+}: {
+  project: TerraformProject
+  running: boolean
+  onSelectWorkspace: (workspaceName: string) => void
+  onCreateWorkspace: () => void
+  onDeleteWorkspace: () => void
+}) {
+  const canDeleteWorkspace = project.workspaces.some((workspace) => !workspace.isCurrent && workspace.name !== 'default')
+
+  return (
+    <div className="tf-section">
+      <div className="tf-section-head">
+        <div>
+          <h3>Workspace</h3>
+          <div className="tf-section-hint">
+            Current workspace: <span className="tf-workspace-badge">{project.currentWorkspace}</span>
+          </div>
+        </div>
+        <div className="tf-workspace-controls">
+          <select
+            className="tf-workspace-select"
+            value={project.currentWorkspace}
+            disabled={running || project.workspaces.length === 0}
+            onChange={(e) => onSelectWorkspace(e.target.value)}
+          >
+            {project.workspaces.map((workspace) => (
+              <option key={workspace.name} value={workspace.name}>{workspace.name}</option>
+            ))}
+          </select>
+          <button type="button" className="tf-toolbar-btn accent" onClick={onCreateWorkspace} disabled={running}>New Workspace</button>
+          <button type="button" className="tf-toolbar-btn danger" onClick={onDeleteWorkspace} disabled={running || !canDeleteWorkspace}>Delete Workspace</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ── Resources Tab ────────────────────────────────────────── */
 
 function ResourcesTab({ project }: { project: TerraformProject }) {
@@ -985,6 +1162,9 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
 
   // Dialogs
   const [showInputs, setShowInputs] = useState(false)
+  const [showRenameDialog, setShowRenameDialog] = useState(false)
+  const [showCreateWorkspaceDialog, setShowCreateWorkspaceDialog] = useState(false)
+  const [showDeleteWorkspaceDialog, setShowDeleteWorkspaceDialog] = useState(false)
   const [prefillMissing, setPrefillMissing] = useState<string[]>([])
   const [resumeCommandAfterInputs, setResumeCommandAfterInputs] = useState<null | 'plan' | 'apply' | 'destroy'>(null)
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -1025,21 +1205,21 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const list = await listProjects(contextKey)
+      const list = await listProjects(contextKey, connection)
       setProjectsList(list)
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [contextKey])
+  }, [connection, contextKey])
 
   useEffect(() => { void reload() }, [reload])
 
   // Load detail when selected
   useEffect(() => {
     if (!selectedId) { setDetail(null); setDriftReport(null); return }
-    void getProject(contextKey, selectedId).then((p) => {
+    void getProject(contextKey, selectedId, connection).then((p) => {
       setDetail(p)
       setDriftReport(null)
       setDriftError('')
@@ -1048,7 +1228,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       setLabError('')
       void setSelectedProjectId(contextKey, selectedId)
     }).catch(() => setDetail(null))
-  }, [contextKey, selectedId])
+  }, [connection, contextKey, selectedId])
 
   const loadDrift = useCallback(async () => {
     if (!detail) return
@@ -1139,7 +1319,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     const dir = await chooseProjectDirectory()
     if (!dir) return
     try {
-      const project = await addProject(contextKey, dir)
+      const project = await addProject(contextKey, dir, connection)
       await reload()
       setSelectedId(project.id)
       setMsg('')
@@ -1160,11 +1340,72 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     }
   }
 
+  async function handleRenameProject(name: string) {
+    if (!detail) return
+    try {
+      const updated = await renameProject(contextKey, detail.id, name)
+      setDetail(updated)
+      setShowRenameDialog(false)
+      setMsg('')
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleOpenInVsCode() {
+    if (!detail) return
+    try {
+      await openProjectInVsCode(detail.rootPath)
+      setMsg('Opened Terraform project in VS Code')
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function handleReload() {
     if (!selectedId) { await reload(); return }
     try {
-      const p = await reloadProject(contextKey, selectedId)
+      const p = await reloadProject(contextKey, selectedId, connection)
       setDetail(p)
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleSelectWorkspace(workspaceName: string) {
+    if (!detail || running || workspaceName === detail.currentWorkspace) return
+    try {
+      const updated = await selectWorkspace(contextKey, detail.id, workspaceName, connection)
+      setDetail(updated)
+      setMsg(`Switched to workspace ${updated.currentWorkspace}`)
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleCreateWorkspace(workspaceName: string) {
+    if (!detail) return
+    try {
+      const updated = await createWorkspace(contextKey, detail.id, workspaceName, connection)
+      setDetail(updated)
+      setShowCreateWorkspaceDialog(false)
+      setMsg(`Created workspace ${updated.currentWorkspace}`)
+      await reload()
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleDeleteWorkspace(workspaceName: string) {
+    if (!detail) return
+    try {
+      const updated = await deleteWorkspace(contextKey, detail.id, workspaceName, connection)
+      setDetail(updated)
+      setShowDeleteWorkspaceDialog(false)
+      setMsg(`Deleted workspace ${workspaceName}`)
       await reload()
     } catch (err) {
       setMsg(err instanceof Error ? err.message : String(err))
@@ -1181,7 +1422,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
   async function handleSaveInputs(variables: Record<string, unknown>, varFile: string) {
     if (!detail) return
     try {
-      const updated = await updateInputs(contextKey, detail.id, variables, varFile)
+      const updated = await updateInputs(contextKey, detail.id, variables, varFile, connection)
       setDetail(updated)
       setShowInputs(false)
       setPrefillMissing([])
@@ -1192,7 +1433,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       if (commandToResume) {
         const log = await runCommand({ profileName: contextKey, connection, projectId: updated.id, command: commandToResume })
         setLastLog(log)
-        const refreshed = await reloadProject(contextKey, updated.id)
+        const refreshed = await reloadProject(contextKey, updated.id, connection)
         setDetail(refreshed)
         await reload()
         if (log.success && commandToResume === 'plan') {
@@ -1354,6 +1595,8 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
       {/* Toolbar */}
       <div className="tf-toolbar">
         <button className="tf-toolbar-btn accent" onClick={handleAddProject} disabled={!cliOk}>Add Project</button>
+        <button className="tf-toolbar-btn" onClick={() => setShowRenameDialog(true)} disabled={!detail}>Rename</button>
+        <button className="tf-toolbar-btn" onClick={() => void handleOpenInVsCode()} disabled={!detail}>Open in VS Code</button>
         <button className="tf-toolbar-btn danger" onClick={handleRemoveProject} disabled={!selectedId}>Remove Project</button>
         <button className="tf-toolbar-btn" onClick={handleReload} disabled={loading}>Reload</button>
         <button className="tf-toolbar-btn" onClick={handleShowInputs} disabled={!detail}>Inputs</button>
@@ -1416,7 +1659,19 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
                 <div className="tf-kv">
                   <div className="tf-kv-row"><div className="tf-kv-label">Name</div><div className="tf-kv-value">{detail.name}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Path</div><div className="tf-kv-value">{detail.rootPath}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Environment</div><div className="tf-kv-value">{detail.environment.environmentLabel}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Workspace</div><div className="tf-kv-value"><span className="tf-workspace-badge">{detail.currentWorkspace}</span></div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Backend</div><div className="tf-kv-value">{detail.metadata.backendType}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Backend Detail</div><div className="tf-kv-value">{detail.metadata.backend.label}</div></div>
+                  {'effectiveStateKey' in detail.metadata.backend && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">State Key</div><div className="tf-kv-value">{detail.metadata.backend.effectiveStateKey}</div></div>
+                  )}
+                  {'stateLocation' in detail.metadata.backend && (
+                    <div className="tf-kv-row"><div className="tf-kv-label">State Path</div><div className="tf-kv-value">{detail.metadata.backend.stateLocation}</div></div>
+                  )}
+                  <div className="tf-kv-row"><div className="tf-kv-label">Region</div><div className="tf-kv-value">{detail.environment.region || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Profile/Session</div><div className="tf-kv-value">{detail.environment.connectionLabel || '-'}</div></div>
+                  <div className="tf-kv-row"><div className="tf-kv-label">Var Set</div><div className="tf-kv-value">{detail.environment.varSetLabel || '-'}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Providers</div><div className="tf-kv-value">{detail.metadata.providerNames.join(', ') || '-'}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">TF Files</div><div className="tf-kv-value">{detail.metadata.tfFileCount}</div></div>
                   <div className="tf-kv-row"><div className="tf-kv-label">Resources</div><div className="tf-kv-value">{detail.metadata.resourceCount}</div></div>
@@ -1425,6 +1680,14 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
                   <div className="tf-kv-row"><div className="tf-kv-label">State Source</div><div className="tf-kv-value">{detail.stateSource || 'none'}</div></div>
                 </div>
               </div>
+
+              <WorkspaceControls
+                project={detail}
+                running={running}
+                onSelectWorkspace={handleSelectWorkspace}
+                onCreateWorkspace={() => setShowCreateWorkspaceDialog(true)}
+                onDeleteWorkspace={() => setShowDeleteWorkspaceDialog(true)}
+              />
 
               {detailTab === 'actions' && (
                 <ActionsTab
@@ -1477,6 +1740,30 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
           onSave={handleSaveInputs}
           onClose={() => { setShowInputs(false); setPrefillMissing([]) }}
           prefillMissing={prefillMissing.length > 0 ? prefillMissing : undefined}
+        />
+      )}
+
+      {showRenameDialog && detail && (
+        <RenameProjectDialog
+          currentName={detail.name}
+          onSave={(name) => void handleRenameProject(name)}
+          onClose={() => setShowRenameDialog(false)}
+        />
+      )}
+
+      {showCreateWorkspaceDialog && detail && (
+        <WorkspaceCreateDialog
+          currentWorkspace={detail.currentWorkspace}
+          onCreate={(workspaceName) => void handleCreateWorkspace(workspaceName)}
+          onClose={() => setShowCreateWorkspaceDialog(false)}
+        />
+      )}
+
+      {showDeleteWorkspaceDialog && detail && (
+        <WorkspaceDeleteDialog
+          workspaces={detail.workspaces}
+          onDelete={(workspaceName) => void handleDeleteWorkspace(workspaceName)}
+          onClose={() => setShowDeleteWorkspaceDialog(false)}
         />
       )}
 

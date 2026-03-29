@@ -583,22 +583,29 @@ const listenerMap = new Map<(event: unknown) => void, (...args: unknown[]) => vo
 const api = {
   detectCli: () => ipcRenderer.invoke('terraform:cli:detect'),
   getCliInfo: () => ipcRenderer.invoke('terraform:cli:info'),
-  listProjects: (profileName: string) => ipcRenderer.invoke('terraform:projects:list', profileName),
-  getProject: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:get', profileName, projectId),
+  listProjects: (profileName: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:list', profileName, connection),
+  getProject: (profileName: string, projectId: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:get', profileName, projectId, connection),
   getDrift: (profileName: string, projectId: string, connection: AwsConnection) =>
     ipcRenderer.invoke('terraform:drift:get', profileName, projectId, connection),
   getObservabilityReport: (profileName: string, projectId: string, connection: AwsConnection) =>
     ipcRenderer.invoke('terraform:observability-report:get', profileName, projectId, connection),
   chooseProjectDirectory: () => ipcRenderer.invoke('terraform:projects:choose-directory'),
   chooseVarFile: () => ipcRenderer.invoke('terraform:projects:choose-file'),
-  addProject: (profileName: string, rootPath: string) => ipcRenderer.invoke('terraform:projects:add', profileName, rootPath),
+  addProject: (profileName: string, rootPath: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:add', profileName, rootPath, connection),
   renameProject: (profileName: string, projectId: string, name: string) => ipcRenderer.invoke('terraform:projects:rename', profileName, projectId, name),
+  openProjectInVsCode: (projectPath: string) => ipcRenderer.invoke('terraform:projects:open-vscode', projectPath),
   removeProject: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:remove', profileName, projectId),
-  reloadProject: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:reload', profileName, projectId),
+  reloadProject: (profileName: string, projectId: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:reload', profileName, projectId, connection),
+  selectWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:workspace:select', profileName, projectId, workspaceName, connection),
+  createWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:workspace:create', profileName, projectId, workspaceName, connection),
+  deleteWorkspace: (profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:workspace:delete', profileName, projectId, workspaceName, connection),
   getSelectedProjectId: (profileName: string) => ipcRenderer.invoke('terraform:projects:selected:get', profileName),
   setSelectedProjectId: (profileName: string, projectId: string) => ipcRenderer.invoke('terraform:projects:selected:set', profileName, projectId),
-  updateInputs: (profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) =>
-    ipcRenderer.invoke('terraform:inputs:update', profileName, projectId, inputs, varFile),
+  updateInputs: (profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string, connection?: AwsConnection) =>
+    ipcRenderer.invoke('terraform:inputs:update', profileName, projectId, inputs, varFile, connection),
   getMissingRequiredInputs: (profileName: string, projectId: string) =>
     ipcRenderer.invoke('terraform:inputs:missing-required', profileName, projectId),
   listCommandLogs: (projectId: string) => ipcRenderer.invoke('terraform:logs:list', projectId),

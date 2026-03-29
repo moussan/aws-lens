@@ -13,8 +13,10 @@ import { getSelectedProjectId, setSelectedProjectId } from './store'
 import {
   addProject,
   clearSavedPlan,
+  createProjectWorkspace,
   detectMissingVars,
   detectTerraformCli,
+  deleteProjectWorkspace,
   getCachedCliInfo,
   getCommandLogs,
   getMissingRequiredInputs,
@@ -24,6 +26,7 @@ import {
   removeProject,
   renameProject,
   runProjectCommand,
+  selectProjectWorkspace,
   updateProjectInputs
 } from './terraform'
 import { getTerraformDriftReport } from './terraformDrift'
@@ -83,12 +86,52 @@ async function stageSshPrivateKey(sourcePath: string): Promise<string> {
   return targetPath
 }
 
+async function openInVisualStudioCode(targetPath: string): Promise<void> {
+  const normalizedPath = path.resolve(targetPath)
+  const candidates: Array<{ command: string; args: string[] }> = []
+
+  if (process.platform === 'win32') {
+    candidates.push(
+      { command: 'cmd.exe', args: ['/c', 'code', '-r', normalizedPath] },
+      { command: 'cmd.exe', args: ['/c', 'code.cmd', '-r', normalizedPath] }
+    )
+
+    const localAppData = process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? '', 'AppData', 'Local')
+    candidates.push(
+      { command: path.join(localAppData, 'Programs', 'Microsoft VS Code', 'Code.exe'), args: ['-r', normalizedPath] },
+      { command: path.join(localAppData, 'Programs', 'Microsoft VS Code Insiders', 'Code - Insiders.exe'), args: ['-r', normalizedPath] }
+    )
+  } else if (process.platform === 'darwin') {
+    candidates.push(
+      { command: 'code', args: ['-r', normalizedPath] },
+      { command: '/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code', args: ['-r', normalizedPath] }
+    )
+  } else {
+    candidates.push(
+      { command: 'code', args: ['-r', normalizedPath] },
+      { command: '/snap/bin/code', args: ['-r', normalizedPath] },
+      { command: '/usr/bin/code', args: ['-r', normalizedPath] }
+    )
+  }
+
+  for (const candidate of candidates) {
+    try {
+      await execFileAsync(candidate.command, candidate.args, { windowsHide: true })
+      return
+    } catch {
+      continue
+    }
+  }
+
+  throw new Error('VS Code could not be launched. Install it and ensure the `code` command is available, or install the standard desktop app.')
+}
+
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('services:list', async () => wrap(() => SERVICE_CATALOG))
   ipcMain.handle('terraform:cli:detect', async () => wrap(() => detectTerraformCli()))
   ipcMain.handle('terraform:cli:info', async () => wrap(() => getCachedCliInfo()))
-  ipcMain.handle('terraform:projects:list', async (_event, profileName: string) => wrap(() => listProjectSummaries(profileName)))
-  ipcMain.handle('terraform:projects:get', async (_event, profileName: string, projectId: string) => wrap(() => getProject(profileName, projectId)))
+  ipcMain.handle('terraform:projects:list', async (_event, profileName: string, connection?: AwsConnection) => wrap(() => listProjectSummaries(profileName, connection)))
+  ipcMain.handle('terraform:projects:get', async (_event, profileName: string, projectId: string, connection?: AwsConnection) => wrap(() => getProject(profileName, projectId, connection)))
   ipcMain.handle('terraform:projects:selected:get', async (_event, profileName: string) => wrap(() => getSelectedProjectId(profileName)))
   ipcMain.handle('terraform:projects:selected:set', async (_event, profileName: string, projectId: string) =>
     wrap(() => setSelectedProjectId(profileName, projectId))
@@ -132,20 +175,32 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return stageSshPrivateKey(result.filePaths[0])
     })
   )
-  ipcMain.handle('terraform:projects:add', async (_event, profileName: string, rootPath: string) => wrap(() => addProject(profileName, rootPath)))
+  ipcMain.handle('terraform:projects:add', async (_event, profileName: string, rootPath: string, connection?: AwsConnection) => wrap(() => addProject(profileName, rootPath, connection)))
   ipcMain.handle('terraform:projects:rename', async (_event, profileName: string, projectId: string, name: string) =>
     wrap(() => renameProject(profileName, projectId, name))
   )
+  ipcMain.handle('terraform:projects:open-vscode', async (_event, projectPath: string) =>
+    wrap(() => openInVisualStudioCode(projectPath))
+  )
   ipcMain.handle('terraform:projects:remove', async (_event, profileName: string, projectId: string) => wrap(() => removeProject(profileName, projectId)))
-  ipcMain.handle('terraform:projects:reload', async (_event, profileName: string, projectId: string) => wrap(() => getProject(profileName, projectId)))
+  ipcMain.handle('terraform:projects:reload', async (_event, profileName: string, projectId: string, connection?: AwsConnection) => wrap(() => getProject(profileName, projectId, connection)))
+  ipcMain.handle('terraform:workspace:select', async (_event, profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    wrap(() => selectProjectWorkspace(profileName, projectId, workspaceName, connection))
+  )
+  ipcMain.handle('terraform:workspace:create', async (_event, profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    wrap(() => createProjectWorkspace(profileName, projectId, workspaceName, connection))
+  )
+  ipcMain.handle('terraform:workspace:delete', async (_event, profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection) =>
+    wrap(() => deleteProjectWorkspace(profileName, projectId, workspaceName, connection))
+  )
   ipcMain.handle('terraform:drift:get', async (_event, profileName: string, projectId: string, connection: AwsConnection) =>
     wrap(() => getTerraformDriftReport(profileName, projectId, connection))
   )
   ipcMain.handle('terraform:observability-report:get', async (_event, profileName: string, projectId: string, connection: AwsConnection) =>
     wrap(() => generateTerraformObservabilityReport(profileName, projectId, connection))
   )
-  ipcMain.handle('terraform:inputs:update', async (_event, profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string) =>
-    wrap(() => updateProjectInputs(profileName, projectId, inputs, varFile))
+  ipcMain.handle('terraform:inputs:update', async (_event, profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string, connection?: AwsConnection) =>
+    wrap(() => updateProjectInputs(profileName, projectId, inputs, varFile, connection))
   )
   ipcMain.handle('terraform:inputs:missing-required', async (_event, profileName: string, projectId: string) =>
     wrap(() => getMissingRequiredInputs(profileName, projectId))

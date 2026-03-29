@@ -2249,6 +2249,7 @@ export type TerraformVariableDefinition = {
 export type TerraformProjectMetadata = {
   terraformVersionConstraint: string
   backendType: string
+  backend: TerraformBackendDetails
   providerNames: string[]
   resourceCount: number
   moduleCount: number
@@ -2259,11 +2260,48 @@ export type TerraformProjectMetadata = {
   s3Backend: TerraformS3BackendConfig | null
 }
 
+export type TerraformBackendDetails =
+  | TerraformLocalBackendDetails
+  | TerraformS3BackendDetails
+  | TerraformGenericBackendDetails
+
+export type TerraformLocalBackendDetails = {
+  type: 'local'
+  label: string
+  stateLocation: string
+}
+
 export type TerraformS3BackendConfig = {
   bucket: string
   key: string
   region: string
   workspaceKeyPrefix: string
+}
+
+export type TerraformS3BackendDetails = TerraformS3BackendConfig & {
+  type: 's3'
+  label: string
+  effectiveStateKey: string
+}
+
+export type TerraformGenericBackendDetails = {
+  type: string
+  label: string
+  summary: string
+}
+
+export type TerraformWorkspaceSummary = {
+  name: string
+  isCurrent: boolean
+}
+
+export type TerraformProjectEnvironmentMetadata = {
+  environmentLabel: string
+  workspaceName: string
+  region: string
+  connectionLabel: string
+  backendType: string
+  varSetLabel: string
 }
 
 export type TerraformResourceInventoryItem = {
@@ -2378,11 +2416,14 @@ export type TerraformProject = {
   rootPath: string
   varFile: string
   variables: Record<string, unknown>
+  environment: TerraformProjectEnvironmentMetadata
   status: TerraformProjectStatus
   inputsFilePath: string
   detectedVariables: TerraformVariableDefinition[]
   inputs: Record<string, unknown>
   metadata: TerraformProjectMetadata
+  workspaces: TerraformWorkspaceSummary[]
+  currentWorkspace: string
   inventory: TerraformResourceInventoryItem[]
   planChanges: TerraformPlanChange[]
   actionRows: TerraformActionRow[]
@@ -2412,7 +2453,7 @@ export type TerraformCommandRequest = {
 
 export type TerraformProjectListItem = Pick<
   TerraformProject,
-  'id' | 'name' | 'rootPath' | 'status' | 'stateSource' | 'metadata' | 'lastPlanSummary' | 'lastCommandAt' | 'inventory'
+  'id' | 'name' | 'rootPath' | 'status' | 'stateSource' | 'metadata' | 'lastPlanSummary' | 'lastCommandAt' | 'inventory' | 'environment' | 'currentWorkspace'
 >
 
 export type TerraformProgressEvent = {

@@ -1,4 +1,5 @@
 import type {
+  AwsConnection,
   ObservabilityPostureReport,
   TerraformCliInfo,
   TerraformCommandLog,
@@ -31,12 +32,12 @@ export async function getCliInfo(): Promise<TerraformCliInfo> {
   return unwrap(await bridge().getCliInfo() as Wrapped<TerraformCliInfo>)
 }
 
-export async function listProjects(profileName: string): Promise<TerraformProjectListItem[]> {
-  return unwrap(await bridge().listProjects(profileName) as Wrapped<TerraformProjectListItem[]>)
+export async function listProjects(profileName: string, connection?: AwsConnection): Promise<TerraformProjectListItem[]> {
+  return unwrap(await bridge().listProjects(profileName, connection) as Wrapped<TerraformProjectListItem[]>)
 }
 
-export async function getProject(profileName: string, projectId: string): Promise<TerraformProject> {
-  return unwrap(await bridge().getProject(profileName, projectId) as Wrapped<TerraformProject>)
+export async function getProject(profileName: string, projectId: string, connection?: AwsConnection): Promise<TerraformProject> {
+  return unwrap(await bridge().getProject(profileName, projectId, connection) as Wrapped<TerraformProject>)
 }
 
 export async function getDrift(profileName: string, projectId: string, connection: { profile: string; region: string }): Promise<TerraformDriftReport> {
@@ -55,20 +56,36 @@ export async function chooseVarFile(): Promise<string> {
   return unwrap(await bridge().chooseVarFile() as Wrapped<string>)
 }
 
-export async function addProject(profileName: string, rootPath: string): Promise<TerraformProject> {
-  return unwrap(await bridge().addProject(profileName, rootPath) as Wrapped<TerraformProject>)
+export async function addProject(profileName: string, rootPath: string, connection?: AwsConnection): Promise<TerraformProject> {
+  return unwrap(await bridge().addProject(profileName, rootPath, connection) as Wrapped<TerraformProject>)
 }
 
 export async function renameProject(profileName: string, projectId: string, name: string): Promise<TerraformProject> {
   return unwrap(await bridge().renameProject(profileName, projectId, name) as Wrapped<TerraformProject>)
 }
 
+export async function openProjectInVsCode(projectPath: string): Promise<void> {
+  return unwrap(await bridge().openProjectInVsCode(projectPath) as Wrapped<void>)
+}
+
 export async function removeProject(profileName: string, projectId: string): Promise<void> {
   return unwrap(await bridge().removeProject(profileName, projectId) as Wrapped<void>)
 }
 
-export async function reloadProject(profileName: string, projectId: string): Promise<TerraformProject> {
-  return unwrap(await bridge().reloadProject(profileName, projectId) as Wrapped<TerraformProject>)
+export async function reloadProject(profileName: string, projectId: string, connection?: AwsConnection): Promise<TerraformProject> {
+  return unwrap(await bridge().reloadProject(profileName, projectId, connection) as Wrapped<TerraformProject>)
+}
+
+export async function selectWorkspace(profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection): Promise<TerraformProject> {
+  return unwrap(await bridge().selectWorkspace(profileName, projectId, workspaceName, connection) as Wrapped<TerraformProject>)
+}
+
+export async function createWorkspace(profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection): Promise<TerraformProject> {
+  return unwrap(await bridge().createWorkspace(profileName, projectId, workspaceName, connection) as Wrapped<TerraformProject>)
+}
+
+export async function deleteWorkspace(profileName: string, projectId: string, workspaceName: string, connection?: AwsConnection): Promise<TerraformProject> {
+  return unwrap(await bridge().deleteWorkspace(profileName, projectId, workspaceName, connection) as Wrapped<TerraformProject>)
 }
 
 export async function getSelectedProjectId(profileName: string): Promise<string> {
@@ -79,8 +96,8 @@ export async function setSelectedProjectId(profileName: string, projectId: strin
   return unwrap(await bridge().setSelectedProjectId(profileName, projectId) as Wrapped<void>)
 }
 
-export async function updateInputs(profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string): Promise<TerraformProject> {
-  return unwrap(await bridge().updateInputs(profileName, projectId, inputs, varFile) as Wrapped<TerraformProject>)
+export async function updateInputs(profileName: string, projectId: string, inputs: Record<string, unknown>, varFile?: string, connection?: AwsConnection): Promise<TerraformProject> {
+  return unwrap(await bridge().updateInputs(profileName, projectId, inputs, varFile, connection) as Wrapped<TerraformProject>)
 }
 
 export async function getMissingRequiredInputs(profileName: string, projectId: string): Promise<string[]> {

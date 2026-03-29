@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { spawn, execFile } from 'node:child_process'
+import { spawn, execFile, execFileSync } from 'node:child_process'
 
 import type { BrowserWindow } from 'electron'
 
@@ -17,12 +17,14 @@ import type {
   TerraformMissingVarsResult,
   TerraformPlanChange,
   TerraformProject,
+  TerraformProjectEnvironmentMetadata,
   TerraformProjectListItem,
   TerraformProjectMetadata,
   TerraformProjectStatus,
   TerraformResourceInventoryItem,
   TerraformResourceRow,
   TerraformS3BackendConfig,
+  TerraformWorkspaceSummary,
   TerraformVariableDefinition,
   AwsConnection
 } from '@shared/types'
@@ -37,6 +39,7 @@ type StoredProject = {
   rootPath: string
   varFile: string
   variables: Record<string, unknown>
+  environment?: TerraformProjectEnvironmentMetadata
 }
 
 type ProjectEvent =
@@ -96,6 +99,29 @@ function planJsonPath(rootPath: string): string {
 
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, '')
+}
+
+function terraformCommand(): string {
+  return cachedCli?.found && cachedCli.path ? cachedCli.path : 'terraform'
+}
+
+function displayConnectionLabel(profileName: string, connection?: AwsConnection): string {
+  if (connection?.label) return connection.label
+  if (profileName.startsWith('profile:')) return profileName.slice('profile:'.length)
+  return ''
+}
+
+function inferVarSetLabel(project: StoredProject): string {
+  const hasInlineVars = Object.keys(project.variables ?? {}).length > 0
+  if (project.varFile) {
+    return hasInlineVars ? `${path.basename(project.varFile)} + inline inputs` : path.basename(project.varFile)
+  }
+  return hasInlineVars ? 'Inline inputs' : ''
+}
+
+function inferEnvironmentLabel(workspaceName: string): string {
+  if (!workspaceName || workspaceName === 'default') return 'Default'
+  return workspaceName
 }
 
 /* ── CLI Detection ────────────────────────────────────────── */
@@ -187,56 +213,236 @@ function resolveS3StateKey(config: TerraformS3BackendConfig, rootPath: string): 
   return `${config.workspaceKeyPrefix}/${workspace}/${config.key}`
 }
 
+function buildBackendDetails(rootPath: string, backendType: string, s3Backend: TerraformS3BackendConfig | null): TerraformProjectMetadata['backend'] {
+  if (backendType === 's3' && s3Backend) {
+    return {
+      ...s3Backend,
+      type: 's3',
+      label: `s3://${s3Backend.bucket}/${resolveS3StateKey(s3Backend, rootPath)}`,
+      effectiveStateKey: resolveS3StateKey(s3Backend, rootPath)
+    }
+  }
+  if (backendType === 'local') {
+    return {
+      type: 'local',
+      label: path.join(rootPath, 'terraform.tfstate'),
+      stateLocation: path.join(rootPath, 'terraform.tfstate')
+    }
+  }
+  return {
+    type: backendType,
+    label: backendType,
+    summary: `Backend type ${backendType}`
+  }
+}
+
+function fallbackWorkspaceSnapshot(rootPath: string): { currentWorkspace: string; workspaces: TerraformWorkspaceSummary[] } {
+  const currentWorkspace = readText(path.join(rootPath, '.terraform', 'environment')).trim() || 'default'
+  const names = new Set<string>(['default'])
+  const workspaceDir = path.join(rootPath, 'terraform.tfstate.d')
+  if (fs.existsSync(workspaceDir)) {
+    for (const entry of fs.readdirSync(workspaceDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name) {
+        names.add(entry.name)
+      }
+    }
+  }
+  names.add(currentWorkspace)
+  const workspaces = [...names].sort().map((name) => ({ name, isCurrent: name === currentWorkspace }))
+  return { currentWorkspace, workspaces }
+}
+
+function parseWorkspaceList(output: string, currentWorkspace: string): TerraformWorkspaceSummary[] {
+  const parsed = stripAnsi(output)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const match = line.match(/^(\*)?\s*(.+)$/)
+      if (!match) return []
+      const name = match[2]?.trim()
+      if (!name || name.startsWith('The currently selected workspace')) return []
+      return [{
+        name,
+        isCurrent: Boolean(match[1]) || name === currentWorkspace
+      }]
+    })
+
+  const names = new Map<string, TerraformWorkspaceSummary>()
+  for (const workspace of parsed) {
+    names.set(workspace.name, workspace)
+  }
+  if (!names.has(currentWorkspace)) {
+    names.set(currentWorkspace, { name: currentWorkspace, isCurrent: true })
+  }
+  return [...names.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function readWorkspaceSnapshot(project: StoredProject, connection?: AwsConnection): { currentWorkspace: string; workspaces: TerraformWorkspaceSummary[] } {
+  const fallback = fallbackWorkspaceSnapshot(project.rootPath)
+
+  try {
+    const env = buildEnvWithVars(project, connection)
+    const currentWorkspace = stripAnsi(execFileSync(terraformCommand(), ['workspace', 'show'], {
+      cwd: project.rootPath,
+      env,
+      timeout: 10000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }).toString()).trim() || fallback.currentWorkspace
+
+    const workspaceOutput = execFileSync(terraformCommand(), ['workspace', 'list'], {
+      cwd: project.rootPath,
+      env,
+      timeout: 10000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }).toString()
+
+    return {
+      currentWorkspace,
+      workspaces: parseWorkspaceList(workspaceOutput, currentWorkspace)
+    }
+  } catch {
+    return fallback
+  }
+}
+
 /* ── Terraform Config Parsing (for dependency graph) ──────── */
 
-type ConfigBlock = { blockType: 'resource' | 'data'; tfType: string; tfName: string; body: string }
+type ConfigBlock = {
+  blockType: 'resource' | 'data'
+  tfType: string
+  tfName: string
+  body: string
+  modulePath: string
+}
 
-function parseConfigBlocks(rootPath: string): ConfigBlock[] {
-  const tfFiles = listTerraformFiles(rootPath)
-  const combined = tfFiles.map(readText).join('\n')
-  const blocks: ConfigBlock[] = []
-  const resourceRe = /\b(resource|data)\s+"([^"]+)"\s+"([^"]+)"\s*\{/g
+type ParsedNamedBlock = {
+  kind: 'resource' | 'data' | 'module'
+  firstLabel: string
+  secondLabel: string
+  body: string
+}
+
+function prefixAddress(modulePath: string, address: string): string {
+  return modulePath ? `${modulePath}.${address}` : address
+}
+
+function normalizeConfigReference(reference: string, modulePath: string): string {
+  if (!reference) return ''
+  if (reference.startsWith('module.') || reference.startsWith('var.') || reference.startsWith('local.') || reference.startsWith('path.')) {
+    return reference
+  }
+  if (reference.startsWith('data.')) {
+    return prefixAddress(modulePath, reference)
+  }
+  if (/^aws_[\w-]+\.[\w-]+$/.test(reference)) {
+    return prefixAddress(modulePath, reference)
+  }
+  return reference
+}
+
+function parseNamedBlocks(combined: string): ParsedNamedBlock[] {
+  const blocks: ParsedNamedBlock[] = []
+  const blockRe = /\b(resource|data|module)\s+"([^"]+)"(?:\s+"([^"]+)")?\s*\{/g
   let match: RegExpExecArray | null
-  while ((match = resourceRe.exec(combined)) !== null) {
+
+  while ((match = blockRe.exec(combined)) !== null) {
+    const kind = match[1] as ParsedNamedBlock['kind']
+    const firstLabel = match[2]
+    const secondLabel = match[3] ?? ''
     const start = match.index + match[0].length
     let depth = 1
     let i = start
+
     while (i < combined.length && depth > 0) {
       if (combined[i] === '{') depth++
       else if (combined[i] === '}') depth--
       i++
     }
-    blocks.push({
-      blockType: match[1] as 'resource' | 'data',
-      tfType: match[2],
-      tfName: match[3],
-      body: combined.slice(start, i - 1)
-    })
+
+    blocks.push({ kind, firstLabel, secondLabel, body: combined.slice(start, i - 1) })
   }
+
   return blocks
+}
+
+function extractLocalModuleSource(body: string, moduleDir: string): string | null {
+  const source = body.match(/source\s*=\s*"([^"]+)"/)?.[1]?.trim()
+  if (!source) return null
+  if (/^\.\.?(?:[\\/]|$)/.test(source) || /^\.?[\\/]/.test(source)) {
+    return path.resolve(moduleDir, source)
+  }
+  return null
+}
+
+function collectConfigBlocks(
+  rootPath: string,
+  modulePath: string,
+  visitedPaths: Set<string>
+): ConfigBlock[] {
+  const resolvedRoot = path.resolve(rootPath)
+  const visitKey = `${modulePath}::${resolvedRoot}`
+  if (visitedPaths.has(visitKey)) return []
+  visitedPaths.add(visitKey)
+
+  const tfFiles = listTerraformFiles(resolvedRoot)
+  const combined = tfFiles.map(readText).join('\n')
+  const parsedBlocks = parseNamedBlocks(combined)
+  const configBlocks: ConfigBlock[] = []
+
+  for (const block of parsedBlocks) {
+    if (block.kind === 'resource' || block.kind === 'data') {
+      configBlocks.push({
+        blockType: block.kind,
+        tfType: block.firstLabel,
+        tfName: block.secondLabel,
+        body: block.body,
+        modulePath
+      })
+      continue
+    }
+
+    const localModuleSource = extractLocalModuleSource(block.body, resolvedRoot)
+    if (!localModuleSource || !fs.existsSync(localModuleSource) || !fs.statSync(localModuleSource).isDirectory()) {
+      continue
+    }
+
+    const childModulePath = prefixAddress(modulePath, `module.${block.firstLabel}`)
+    configBlocks.push(...collectConfigBlocks(localModuleSource, childModulePath, visitedPaths))
+  }
+
+  return configBlocks
+}
+
+function parseConfigBlocks(rootPath: string): ConfigBlock[] {
+  return collectConfigBlocks(rootPath, '', new Set<string>())
 }
 
 function buildConfigEdges(blocks: ConfigBlock[]): TerraformGraphEdge[] {
   const edges: TerraformGraphEdge[] = []
   const edgeSet = new Set<string>()
   for (const block of blocks) {
-    const address = block.blockType === 'data'
+    const baseAddress = block.blockType === 'data'
       ? `data.${block.tfType}.${block.tfName}`
       : `${block.tfType}.${block.tfName}`
+    const address = prefixAddress(block.modulePath, baseAddress)
     // Parse depends_on
     const dependsMatch = block.body.match(/depends_on\s*=\s*\[([\s\S]*?)\]/)
     if (dependsMatch) {
       const deps = dependsMatch[1].match(/[\w.]+/g) ?? []
       for (const dep of deps) {
-        const key = `${dep}->${address}`
-        if (!edgeSet.has(key)) { edgeSet.add(key); edges.push({ from: dep, to: address, relation: 'depends_on' }) }
+        const normalizedDep = normalizeConfigReference(dep, block.modulePath)
+        const key = `${normalizedDep}->${address}`
+        if (!edgeSet.has(key)) { edgeSet.add(key); edges.push({ from: normalizedDep, to: address, relation: 'depends_on' }) }
       }
     }
     // Detect references like aws_vpc.main, data.aws_ami.latest
     const refRe = /(?:data\.)?aws_[\w]+\.[\w]+/g
     let refMatch: RegExpExecArray | null
     while ((refMatch = refRe.exec(block.body)) !== null) {
-      const ref = refMatch[0]
+      const ref = normalizeConfigReference(refMatch[0], block.modulePath)
       if (ref !== address && !ref.startsWith(address + '.')) {
         const key = `${ref}->${address}`
         if (!edgeSet.has(key)) { edgeSet.add(key); edges.push({ from: ref, to: address, relation: 'reference' }) }
@@ -329,6 +535,7 @@ function inferMetadata(rootPath: string): {
     metadata: {
       terraformVersionConstraint: versionConstraint,
       backendType,
+      backend: buildBackendDetails(rootPath, backendType, s3Backend),
       providerNames,
       resourceCount,
       moduleCount,
@@ -857,6 +1064,23 @@ function readMergedInputValues(project: StoredProject): Record<string, unknown> 
   }
 }
 
+function buildEnvironmentMetadata(
+  project: StoredProject,
+  profileName: string,
+  connection: AwsConnection | undefined,
+  metadata: TerraformProjectMetadata,
+  currentWorkspace: string
+): TerraformProjectEnvironmentMetadata {
+  return {
+    environmentLabel: inferEnvironmentLabel(currentWorkspace),
+    workspaceName: currentWorkspace,
+    region: connection?.region ?? project.environment?.region ?? metadata.s3Backend?.region ?? '',
+    connectionLabel: displayConnectionLabel(profileName, connection) || project.environment?.connectionLabel || '',
+    backendType: metadata.backendType,
+    varSetLabel: inferVarSetLabel(project) || project.environment?.varSetLabel || ''
+  }
+}
+
 export function getMissingRequiredInputs(profileName: string, projectId: string): string[] {
   const project = getStoredProjects(profileName).find((p) => p.id === projectId)
   if (!project) throw new Error('Project not found.')
@@ -935,18 +1159,26 @@ function projectStatus(rootPath: string): TerraformProjectStatus {
   return fs.existsSync(rootPath) ? 'Ready' : 'Missing'
 }
 
-function loadProject(project: StoredProject): TerraformProject {
+function loadProject(project: StoredProject, profileName = '', connection?: AwsConnection): TerraformProject {
   const status = projectStatus(project.rootPath)
   if (status === 'Missing') {
     const emptyMeta: TerraformProjectMetadata = {
-      terraformVersionConstraint: '', backendType: 'local', providerNames: [],
+      terraformVersionConstraint: '', backendType: 'local', backend: {
+        type: 'local',
+        label: path.join(project.rootPath, 'terraform.tfstate'),
+        stateLocation: path.join(project.rootPath, 'terraform.tfstate')
+      }, providerNames: [],
       resourceCount: 0, moduleCount: 0, variableCount: 0, outputsCount: 0, tfFileCount: 0,
       lastScannedAt: '', s3Backend: null
     }
+    const currentWorkspace = project.environment?.workspaceName || 'default'
     return {
       id: project.id, name: project.name, rootPath: project.rootPath,
       varFile: project.varFile ?? '', variables: project.variables ?? {},
+      environment: buildEnvironmentMetadata(project, profileName, connection, emptyMeta, currentWorkspace),
       status: 'Missing', inputsFilePath: managedInputsPath(project.rootPath),
+      workspaces: [{ name: currentWorkspace, isCurrent: true }],
+      currentWorkspace,
       detectedVariables: [], inputs: {}, metadata: emptyMeta,
       inventory: [], planChanges: [], actionRows: [], resourceRows: [],
       diagram: { nodes: [], edges: [] },
@@ -958,17 +1190,22 @@ function loadProject(project: StoredProject): TerraformProject {
   }
 
   const { metadata, variables } = inferMetadata(project.rootPath)
+  const { currentWorkspace, workspaces } = readWorkspaceSnapshot(project, connection)
   const inputs = parseJsonFile<Record<string, unknown>>(managedInputsPath(project.rootPath), {})
   const { inventory, stateAddresses, rawStateJson, stateSource } = readStateSnapshot(project.rootPath)
   const { planChanges, lastPlanSummary } = readPlanSnapshot(project.rootPath)
   const actionRows = buildActionRows(planChanges, inventory)
   const resourceRows = buildResourceRows(inventory)
   const diagram = buildDiagram(inventory, planChanges, project.rootPath)
+  const environment = buildEnvironmentMetadata(project, profileName, connection, metadata, currentWorkspace)
 
   return {
     id: project.id, name: project.name, rootPath: project.rootPath,
     varFile: project.varFile ?? '', variables: project.variables ?? {},
+    environment,
     status, inputsFilePath: managedInputsPath(project.rootPath),
+    workspaces,
+    currentWorkspace,
     detectedVariables: variables, inputs, metadata,
     inventory, planChanges, actionRows, resourceRows, diagram,
     lastPlanSummary, lastCommandAt: commandLogs.get(project.id)?.[0]?.startedAt ?? '',
@@ -986,7 +1223,29 @@ function normalizeStored(raw: Record<string, unknown>): StoredProject | null {
     name: typeof raw.name === 'string' && raw.name ? raw.name : path.basename(raw.rootPath as string),
     rootPath: raw.rootPath as string,
     varFile: typeof raw.varFile === 'string' ? raw.varFile : '',
-    variables: (raw.variables && typeof raw.variables === 'object' && !Array.isArray(raw.variables)) ? raw.variables as Record<string, unknown> : {}
+    variables: (raw.variables && typeof raw.variables === 'object' && !Array.isArray(raw.variables)) ? raw.variables as Record<string, unknown> : {},
+    environment: (raw.environment && typeof raw.environment === 'object' && !Array.isArray(raw.environment))
+      ? raw.environment as TerraformProjectEnvironmentMetadata
+      : undefined
+  }
+}
+
+function validateWorkspaceName(workspaceName: string): string {
+  const trimmed = workspaceName.trim()
+  if (!trimmed) throw new Error('Workspace name is required.')
+  if (/\s/.test(trimmed)) throw new Error('Workspace names cannot contain whitespace.')
+  return trimmed
+}
+
+async function runWorkspaceCommand(
+  project: StoredProject,
+  args: string[],
+  connection?: AwsConnection
+): Promise<void> {
+  const env = buildEnvWithVars(project, connection)
+  const result = await runChildProcess(project.rootPath, terraformCommand(), args, env)
+  if (result.exitCode !== 0) {
+    throw new Error(stripAnsi(result.output).trim() || `Terraform ${args.join(' ')} failed.`)
   }
 }
 
@@ -1000,17 +1259,33 @@ function setStoredProjects(profileName: string, projects: StoredProject[]): void
   setProjects(profileName, projects as unknown as Array<{ id: string; name: string; rootPath: string }>)
 }
 
-export function listProjectSummaries(profileName: string): TerraformProjectListItem[] {
-  return getStoredProjects(profileName).map(loadProject)
+function syncStoredProjectEnvironment(
+  profileName: string,
+  projectId: string,
+  environment: TerraformProjectEnvironmentMetadata
+): void {
+  const stored = getStoredProjects(profileName)
+  const next = stored.map((project) => project.id === projectId ? { ...project, environment } : project)
+  setStoredProjects(profileName, next)
 }
 
-export function getProject(profileName: string, projectId: string): TerraformProject {
+export function listProjectSummaries(profileName: string, connection?: AwsConnection): TerraformProjectListItem[] {
+  return getStoredProjects(profileName).map((project) => {
+    const loaded = loadProject(project, profileName, connection)
+    syncStoredProjectEnvironment(profileName, project.id, loaded.environment)
+    return loaded
+  })
+}
+
+export function getProject(profileName: string, projectId: string, connection?: AwsConnection): TerraformProject {
   const project = getStoredProjects(profileName).find((p) => p.id === projectId)
   if (!project) throw new Error('Project not found.')
-  return loadProject(project)
+  const loaded = loadProject(project, profileName, connection)
+  syncStoredProjectEnvironment(profileName, project.id, loaded.environment)
+  return loaded
 }
 
-export function addProject(profileName: string, rootPath: string): TerraformProject {
+export function addProject(profileName: string, rootPath: string, connection?: AwsConnection): TerraformProject {
   const normalized = path.resolve(rootPath)
   if (!fs.existsSync(normalized)) throw new Error('Selected path does not exist.')
   if (!fs.statSync(normalized).isDirectory()) throw new Error('Project path must be a directory.')
@@ -1018,13 +1293,13 @@ export function addProject(profileName: string, rootPath: string): TerraformProj
 
   const stored = getStoredProjects(profileName)
   const existing = stored.find((p) => path.normalize(p.rootPath).toLowerCase() === path.normalize(normalized).toLowerCase())
-  if (existing) return loadProject(existing)
+  if (existing) return getProject(profileName, existing.id, connection)
 
   const created: StoredProject = {
     id: randomUUID(), name: path.basename(normalized), rootPath: normalized, varFile: '', variables: {}
   }
   setStoredProjects(profileName, [...stored, created])
-  return loadProject(created)
+  return getProject(profileName, created.id, connection)
 }
 
 export function removeProject(profileName: string, projectId: string): void {
@@ -1045,7 +1320,8 @@ export function updateProjectInputs(
   profileName: string,
   projectId: string,
   inputs: Record<string, unknown>,
-  varFile?: string
+  varFile?: string,
+  connection?: AwsConnection
 ): TerraformProject {
   const stored = getStoredProjects(profileName)
   const idx = stored.findIndex((p) => p.id === projectId)
@@ -1055,7 +1331,64 @@ export function updateProjectInputs(
   project.variables = inputs
   writeAutoTfvars(project)
   setStoredProjects(profileName, stored)
-  return loadProject(project)
+  return getProject(profileName, projectId, connection)
+}
+
+export async function selectProjectWorkspace(
+  profileName: string,
+  projectId: string,
+  workspaceName: string,
+  connection?: AwsConnection
+): Promise<TerraformProject> {
+  const project = getStoredProjects(profileName).find((item) => item.id === projectId)
+  if (!project) throw new Error('Project not found.')
+  const target = validateWorkspaceName(workspaceName)
+  await runWorkspaceCommand(project, ['workspace', 'select', target], connection)
+  clearStateCache(project.rootPath)
+  syncStoredProjectEnvironment(profileName, projectId, {
+    environmentLabel: inferEnvironmentLabel(target),
+    workspaceName: target,
+    region: connection?.region ?? project.environment?.region ?? '',
+    connectionLabel: displayConnectionLabel(profileName, connection) || project.environment?.connectionLabel || '',
+    backendType: project.environment?.backendType ?? 'local',
+    varSetLabel: inferVarSetLabel(project) || project.environment?.varSetLabel || ''
+  })
+  return getProject(profileName, projectId, connection)
+}
+
+export async function createProjectWorkspace(
+  profileName: string,
+  projectId: string,
+  workspaceName: string,
+  connection?: AwsConnection
+): Promise<TerraformProject> {
+  const project = getStoredProjects(profileName).find((item) => item.id === projectId)
+  if (!project) throw new Error('Project not found.')
+  const target = validateWorkspaceName(workspaceName)
+  await runWorkspaceCommand(project, ['workspace', 'new', target], connection)
+  clearStateCache(project.rootPath)
+  return getProject(profileName, projectId, connection)
+}
+
+export async function deleteProjectWorkspace(
+  profileName: string,
+  projectId: string,
+  workspaceName: string,
+  connection?: AwsConnection
+): Promise<TerraformProject> {
+  const project = getStoredProjects(profileName).find((item) => item.id === projectId)
+  if (!project) throw new Error('Project not found.')
+  const target = validateWorkspaceName(workspaceName)
+  if (target === 'default') {
+    throw new Error('The default workspace cannot be deleted.')
+  }
+  const snapshot = readWorkspaceSnapshot(project, connection)
+  if (snapshot.currentWorkspace === target) {
+    throw new Error('Select a different workspace before deleting the current workspace.')
+  }
+  await runWorkspaceCommand(project, ['workspace', 'delete', target], connection)
+  clearStateCache(project.rootPath)
+  return getProject(profileName, projectId, connection)
 }
 
 export function getCommandLogs(projectId: string): TerraformCommandLog[] {
@@ -1135,7 +1468,7 @@ function pushLog(projectId: string, log: TerraformCommandLog): void {
 
 async function runTerraformShowJson(rootPath: string, planPath: string, env: Record<string, string>): Promise<void> {
   const jsonPath = `${planPath}.json`
-  const { output } = await runChildProcess(rootPath, 'terraform', ['show', '-json', planPath], env)
+  const { output } = await runChildProcess(rootPath, terraformCommand(), ['show', '-json', planPath], env)
   fs.writeFileSync(jsonPath, output, 'utf-8')
 }
 
@@ -1159,7 +1492,7 @@ function clearStateCache(rootPath: string): void {
 
 async function refreshRemoteStateCache(rootPath: string, env: Record<string, string>): Promise<boolean> {
   try {
-    const result = await runChildProcess(rootPath, 'terraform', ['state', 'pull'], env)
+    const result = await runChildProcess(rootPath, terraformCommand(), ['state', 'pull'], env)
     if (result.exitCode === 0 && result.output.trim()) {
       fs.writeFileSync(stateCachePath(rootPath), result.output, 'utf-8')
       return true
@@ -1246,7 +1579,7 @@ export async function runProjectCommand(
   let lastProgressTime = 0
 
   try {
-    const result = await runChildProcess(project.rootPath, 'terraform', args, env, (chunk) => {
+    const result = await runChildProcess(project.rootPath, terraformCommand(), args, env, (chunk) => {
       log.output += chunk
       emit(window, { type: 'output', projectId: request.projectId, logId: log.id, chunk })
 
@@ -1297,7 +1630,7 @@ export async function runProjectCommand(
       fs.writeFileSync(stateCachePath(project.rootPath), log.output, 'utf-8')
     }
 
-    const refreshedProject = loadProject(project)
+    const refreshedProject = getProject(request.profileName, request.projectId, request.connection)
     emit(window, { type: 'completed', projectId: request.projectId, log, project: refreshedProject })
     return log
   } catch (error) {
@@ -1305,7 +1638,7 @@ export async function runProjectCommand(
     log.exitCode = -1
     log.success = false
     log.output += `\n${error instanceof Error ? error.message : String(error)}`
-    emit(window, { type: 'completed', projectId: request.projectId, log, project: loadProject(project) })
+    emit(window, { type: 'completed', projectId: request.projectId, log, project: getProject(request.profileName, request.projectId, request.connection) })
     return log
   } finally {
     cleanupStateVarFile?.()

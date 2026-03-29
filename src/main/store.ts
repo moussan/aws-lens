@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { app } from 'electron'
+import type { TerraformProjectEnvironmentMetadata } from '@shared/types'
 
 type StoredProject = {
   id: string
@@ -9,6 +10,7 @@ type StoredProject = {
   rootPath: string
   varFile?: string
   variables?: Record<string, unknown>
+  environment?: TerraformProjectEnvironmentMetadata
 }
 
 type ProfileData = {
@@ -45,8 +47,23 @@ function sanitizeProjects(projects: unknown[]): StoredProject[] {
       variables:
         p.variables && typeof p.variables === 'object' && !Array.isArray(p.variables)
           ? (p.variables as Record<string, unknown>)
-          : {}
+          : {},
+      environment:
+        p.environment && typeof p.environment === 'object' && !Array.isArray(p.environment)
+          ? sanitizeEnvironment(p.environment as Record<string, unknown>)
+          : undefined
     }))
+}
+
+function sanitizeEnvironment(raw: Record<string, unknown>): TerraformProjectEnvironmentMetadata {
+  return {
+    environmentLabel: typeof raw.environmentLabel === 'string' ? raw.environmentLabel : '',
+    workspaceName: typeof raw.workspaceName === 'string' ? raw.workspaceName : 'default',
+    region: typeof raw.region === 'string' ? raw.region : '',
+    connectionLabel: typeof raw.connectionLabel === 'string' ? raw.connectionLabel : '',
+    backendType: typeof raw.backendType === 'string' ? raw.backendType : 'local',
+    varSetLabel: typeof raw.varSetLabel === 'string' ? raw.varSetLabel : ''
+  }
 }
 
 function read(): StoreData {

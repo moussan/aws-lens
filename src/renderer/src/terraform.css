@@ -46,6 +46,17 @@
   background: #c0392b;
 }
 
+.tf-workspace-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(74, 143, 231, 0.16);
+  color: #9ec7ff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 /* ── CLI Banner ──────────────────────────────────────────── */
 
 .tf-cli-banner {
@@ -503,6 +514,24 @@
   gap: 12px;
 }
 
+.tf-workspace-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tf-workspace-select,
+.tf-inputs-dialog select {
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid #3b4350;
+  border-radius: 4px;
+  background: #111820;
+  color: #edf1f6;
+  font-size: 12px;
+}
+
 .tf-drift-filters {
   display: flex;
   justify-content: space-between;
@@ -899,4 +928,36 @@
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+@media (max-width: 960px) {
+  .tf-main-layout {
+    flex-direction: column;
+  }
+
+  .tf-project-table-area {
+    width: 100%;
+    min-width: 0;
+    max-height: 320px;
+    border-right: 0;
+    border-bottom: 1px solid #3b4350;
+  }
+
+  .tf-detail-pane {
+    max-height: none;
+  }
+
+  .tf-actions-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tf-workspace-controls {
+    width: 100%;
+  }
+
+  .tf-workspace-select,
+  .tf-inputs-dialog select {
+    width: 100%;
+    min-width: 0;
+  }
 }
