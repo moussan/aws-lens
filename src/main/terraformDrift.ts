@@ -3,13 +3,19 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import { app } from 'electron'
+import { DescribeAddressesCommand, EC2Client } from '@aws-sdk/client-ec2'
+import { DescribeClustersCommand, ECSClient, ListClustersCommand } from '@aws-sdk/client-ecs'
+import { IAMClient, ListAttachedRolePoliciesCommand } from '@aws-sdk/client-iam'
+import { DescribeDBInstancesCommand, DescribeDBSubnetGroupsCommand, RDSClient } from '@aws-sdk/client-rds'
 
 import type {
   AwsConnection,
   Ec2InstanceSummary,
+  EcsClusterSummary,
   EcrRepositorySummary,
   EksClusterSummary,
   InternetGatewaySummary,
+  IamRoleSummary,
   LambdaFunctionSummary,
   NatGatewaySummary,
   NetworkInterfaceSummary,
@@ -31,9 +37,12 @@ import type {
   TransitGatewaySummary,
   VpcSummary
 } from '@shared/types'
+import { awsClientConfig, readTags } from './aws/client'
 import { listEc2Instances } from './aws/ec2'
 import { listEcrRepositories } from './aws/ecr'
-import { listEksClusters } from './aws/eks'
+import { listClusters as listEcsClusters } from './aws/ecs'
+import { listEksClusters, listEksNodegroups } from './aws/eks'
+import { listIamRoles } from './aws/iam'
 import { listLambdaFunctions } from './aws/lambda'
 import { listDbClusters, listDbInstances } from './aws/rds'
 import { listBuckets } from './aws/s3'
@@ -62,6 +71,71 @@ type ComparableResource = {
   tags: Record<string, string>
 }
 
+type EcsClusterCapacityProviderSummary = {
+  clusterName: string
+  capacityProviders: string[]
+  defaultStrategy: string[]
+}
+
+type EksNodegroupLiveSummary = {
+  clusterName: string
+  nodegroupName: string
+  status: string
+  minSize: number
+  desiredSize: number
+  maxSize: number
+  instanceTypes: string[]
+}
+
+type IamRolePolicyAttachmentSummary = {
+  roleName: string
+  policyArn: string
+  policyName: string
+}
+
+type ElasticIpSummary = {
+  allocationId: string
+  publicIp: string
+  privateIp: string
+  domain: string
+  networkInterfaceId: string
+  instanceId: string
+  tags: Record<string, string>
+}
+
+type DbSubnetGroupSummary = {
+  name: string
+  description: string
+  vpcId: string
+  subnetCount: number
+}
+
+type AuroraClusterInstanceSummary = {
+  dbInstanceIdentifier: string
+  dbClusterIdentifier: string
+  engine: string
+  dbInstanceClass: string
+  availabilityZone: string
+}
+
+type RouteTableAssociationSummary = {
+  associationId: string
+  routeTableId: string
+  subnetId: string
+  gatewayId: string
+  isMain: boolean
+}
+
+type SecurityGroupRuleSummary = {
+  securityGroupId: string
+  direction: 'ingress' | 'egress'
+  protocol: string
+  fromPort: number
+  toPort: number
+  source: string
+  description: string
+}
+
 type LiveInventory = {
   aws_instance: Ec2InstanceSummary[]
   aws_security_group: SecurityGroupSummary[]
@@ -78,6 +152,16 @@ type LiveInventory = {
   aws_rds_cluster: RdsClusterSummary[]
   aws_ecr_repository: EcrRepositorySummary[]
   aws_eks_cluster: EksClusterSummary[]
+  aws_ecs_cluster: EcsClusterSummary[]
+  aws_ecs_cluster_capacity_providers: EcsClusterCapacityProviderSummary[]
+  aws_eks_node_group: EksNodegroupLiveSummary[]
+  aws_iam_role: IamRoleSummary[]
+  aws_iam_role_policy_attachment: IamRolePolicyAttachmentSummary[]
+  aws_eip: ElasticIpSummary[]
+  aws_db_subnet_group: DbSubnetGroupSummary[]
+  aws_rds_cluster_instance: AuroraClusterInstanceSummary[]
+  aws_route_table_association: RouteTableAssociationSummary[]
+  aws_security_group_rule: SecurityGroupRuleSummary[]
 }
 
 type SupportedResourceType = keyof LiveInventory
@@ -199,11 +283,16 @@ function compareAttributes(terraform: ComparableResource, live: ComparableResour
     const left = terraform.attributes[key]
     const right = live.attributes[key]
     if (left === undefined || right === undefined || left === right) return []
+    if (typeof left === 'string' && left.trim().length === 0) return []
     return [createDifference(key, key.replaceAll('_', ' '), 'attribute', formatValue(left), formatValue(right))]
   })
 }
 
 function compareTags(terraform: ComparableResource, live: ComparableResource): TerraformDriftDifference[] {
+  // Some list/summary APIs in this workspace do not hydrate tags for every
+  // resource type. Treat an empty live tag set as "unknown" instead of
+  // "definitively no tags" to avoid false-positive drift immediately after apply.
+  if (Object.keys(live.tags).length === 0) return []
   const keys = unique([...Object.keys(terraform.tags), ...Object.keys(live.tags)]).sort()
   return keys.flatMap((key) => {
     const left = terraform.tags[key] ?? ''
@@ -217,9 +306,9 @@ function sortItems(items: TerraformDriftItem[]): TerraformDriftItem[] {
   const statusOrder: Record<TerraformDriftStatus, number> = {
     drifted: 0,
     missing_in_aws: 1,
-    unmanaged_in_aws: 2,
-    unsupported: 3,
-    in_sync: 4
+    in_sync: 2,
+    unmanaged_in_aws: 3,
+    unsupported: 4
   }
   return [...items].sort((left, right) =>
     statusOrder[left.status] - statusOrder[right.status] ||
@@ -239,6 +328,32 @@ function sanitizeFileSegment(value: string): string {
 
 function driftStorePath(profileName: string, projectId: string, region: string): string {
   return path.join(driftStoreDir(), `${sanitizeFileSegment(profileName)}-${sanitizeFileSegment(region)}-${sanitizeFileSegment(projectId)}.json`)
+}
+
+export function invalidateTerraformDriftReport(profileName: string, projectId: string, region: string): void {
+  try {
+    fs.rmSync(driftStorePath(profileName, projectId, region), { force: true })
+  } catch {
+    // Ignore cache invalidation failures. Drift can always be re-scanned.
+  }
+}
+
+export function invalidateTerraformDriftReports(profileName: string, projectId: string): void {
+  try {
+    const suffix = `-${sanitizeFileSegment(projectId)}.json`
+    for (const entry of fs.readdirSync(driftStoreDir(), { withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      if (!entry.name.startsWith(`${sanitizeFileSegment(profileName)}-`)) continue
+      if (!entry.name.endsWith(suffix)) continue
+      try {
+        fs.rmSync(path.join(driftStoreDir(), entry.name), { force: true })
+      } catch {
+        // Ignore per-file invalidation failures.
+      }
+    }
+  } catch {
+    // Ignore cache invalidation failures. Drift can always be re-scanned.
+  }
 }
 
 function readStoredContext(profileName: string, projectId: string, region: string): StoredDriftContext | null {
@@ -324,19 +439,198 @@ function findLiveMatch(terraform: ComparableResource, live: ComparableResource[]
   return null
 }
 
-function inferRelatedAddresses(live: ComparableResource, terraformResources: NormalizedTerraformResource[]): string[] {
-  const normalizedLogical = live.logicalName.toLowerCase()
-  const normalizedId = live.cloudIdentifier.toLowerCase()
-  return terraformResources
-    .filter((candidate) =>
-      candidate.comparable.resourceType === live.resourceType &&
-      (
-        (normalizedLogical && candidate.comparable.logicalName.toLowerCase() === normalizedLogical) ||
-        (normalizedId && candidate.comparable.cloudIdentifier.toLowerCase() === normalizedId) ||
-        (live.tags.Name && candidate.comparable.tags.Name && candidate.comparable.tags.Name === live.tags.Name)
-      )
-    )
-    .map((candidate) => candidate.resource.address)
+function supportedCoverage(): TerraformDriftCoverageItem[] {
+  return Object.entries(SUPPORTED_HANDLERS)
+    .map(([resourceType, handler]) => coverageItem(resourceType, handler.verifiedChecks, handler.inferredChecks, handler.notes))
+    .sort((left, right) => left.resourceType.localeCompare(right.resourceType))
+}
+
+function normalizeRuleProtocol(value: string): string {
+  if (value === '-1' || value.toLowerCase() === 'all') return 'all'
+  return value.toLowerCase()
+}
+
+function normalizeRuleSource(values: Record<string, unknown>, direction: 'ingress' | 'egress'): string {
+  const key = direction === 'ingress' ? 'source_security_group_id' : 'source_security_group_id'
+  return str(values[key])
+    || list(values.prefix_list_ids)[0]
+    || list(values.cidr_blocks)[0]
+    || list(values.ipv6_cidr_blocks)[0]
+    || '0.0.0.0/0'
+}
+
+function canonicalSecurityGroupRuleKey(
+  groupId: string,
+  direction: 'ingress' | 'egress',
+  protocol: string,
+  fromPort: number,
+  toPort: number,
+  source: string
+): string {
+  return [groupId, direction, normalizeRuleProtocol(protocol), fromPort, toPort, source].join('|')
+}
+
+function canonicalCapacityProviderStrategy(values: unknown): string[] {
+  if (!Array.isArray(values)) return []
+  return values
+    .map((value) => {
+      const item = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+      const provider = str(item.capacity_provider)
+      if (!provider) return ''
+      const base = num(item.base)
+      const weight = num(item.weight)
+      return `${provider}:${base ?? 0}:${weight ?? 0}`
+    })
+    .filter(Boolean)
+    .sort()
+}
+
+async function listEcsClusterCapacityProviders(connection: AwsConnection): Promise<EcsClusterCapacityProviderSummary[]> {
+  const client = new ECSClient(awsClientConfig(connection))
+  const listOutput = await client.send(new ListClustersCommand({}))
+  const clusterArns = listOutput.clusterArns ?? []
+  if (clusterArns.length === 0) return []
+
+  const describeOutput = await client.send(new DescribeClustersCommand({ clusters: clusterArns }))
+  return (describeOutput.clusters ?? []).map((cluster) => ({
+    clusterName: cluster.clusterName ?? '-',
+    capacityProviders: [...(cluster.capacityProviders ?? [])].sort(),
+    defaultStrategy: (cluster.defaultCapacityProviderStrategy ?? [])
+      .map((item) => `${item.capacityProvider ?? ''}:${item.base ?? 0}:${item.weight ?? 0}`)
+      .filter((item) => item.split(':')[0])
+      .sort()
+  }))
+}
+
+async function listElasticIps(connection: AwsConnection): Promise<ElasticIpSummary[]> {
+  const client = new EC2Client(awsClientConfig(connection))
+  const output = await client.send(new DescribeAddressesCommand({}))
+  return (output.Addresses ?? []).map((address) => ({
+    allocationId: address.AllocationId ?? '-',
+    publicIp: address.PublicIp ?? '-',
+    privateIp: address.PrivateIpAddress ?? '-',
+    domain: address.Domain ?? '-',
+    networkInterfaceId: address.NetworkInterfaceId ?? '-',
+    instanceId: address.InstanceId ?? '-',
+    tags: readTags(address.Tags)
+  }))
+}
+
+async function listDbSubnetGroups(connection: AwsConnection): Promise<DbSubnetGroupSummary[]> {
+  const client = new RDSClient(awsClientConfig(connection))
+  const output = await client.send(new DescribeDBSubnetGroupsCommand({}))
+  return (output.DBSubnetGroups ?? []).map((group) => ({
+    name: group.DBSubnetGroupName ?? '-',
+    description: group.DBSubnetGroupDescription ?? '-',
+    vpcId: group.VpcId ?? '-',
+    subnetCount: group.Subnets?.length ?? 0
+  }))
+}
+
+async function listAuroraClusterInstances(connection: AwsConnection): Promise<AuroraClusterInstanceSummary[]> {
+  const client = new RDSClient(awsClientConfig(connection))
+  const output = await client.send(new DescribeDBInstancesCommand({}))
+  return (output.DBInstances ?? [])
+    .filter((instance) => Boolean(instance.DBClusterIdentifier))
+    .map((instance) => ({
+      dbInstanceIdentifier: instance.DBInstanceIdentifier ?? '-',
+      dbClusterIdentifier: instance.DBClusterIdentifier ?? '-',
+      engine: instance.Engine ?? '-',
+      dbInstanceClass: instance.DBInstanceClass ?? '-',
+      availabilityZone: instance.AvailabilityZone ?? '-'
+    }))
+}
+
+async function listIamRolePolicyAttachments(connection: AwsConnection, roles: IamRoleSummary[]): Promise<IamRolePolicyAttachmentSummary[]> {
+  const client = new IAMClient(awsClientConfig(connection))
+  const attachments = await Promise.all(roles.map(async (role) => {
+    const output = await client.send(new ListAttachedRolePoliciesCommand({ RoleName: role.roleName }))
+    return (output.AttachedPolicies ?? []).map((policy) => ({
+      roleName: role.roleName,
+      policyArn: policy.PolicyArn ?? '-',
+      policyName: policy.PolicyName ?? '-'
+    }))
+  }))
+  return attachments.flat()
+}
+
+function flattenRouteTableAssociations(routeTables: RouteTableSummary[]): RouteTableAssociationSummary[] {
+  return routeTables.flatMap((routeTable) => {
+    const subnetAssociations = routeTable.associatedSubnets.map((subnetId) => ({
+      associationId: `${routeTable.routeTableId}:${subnetId}`,
+      routeTableId: routeTable.routeTableId,
+      subnetId,
+      gatewayId: '',
+      isMain: false
+    }))
+    if (!routeTable.isMain) return subnetAssociations
+    return [{
+      associationId: `${routeTable.routeTableId}:main`,
+      routeTableId: routeTable.routeTableId,
+      subnetId: '',
+      gatewayId: '',
+      isMain: true
+    }, ...subnetAssociations]
+  })
+}
+
+function flattenSecurityGroupRules(groups: SecurityGroupSummary[]): SecurityGroupRuleSummary[] {
+  return groups.flatMap((group) => [
+    ...(group.inboundRules ?? []).map((rule) => ({
+      securityGroupId: group.groupId,
+      direction: 'ingress' as const,
+      protocol: rule.protocol,
+      fromPort: rule.portRange === 'All' ? -1 : Number(rule.portRange.split('-')[0] ?? '-1'),
+      toPort: rule.portRange === 'All'
+        ? -1
+        : Number((rule.portRange.includes('-') ? rule.portRange.split('-')[1] : rule.portRange) ?? '-1'),
+      source: rule.source,
+      description: rule.description
+    })),
+    ...(group.outboundRules ?? []).map((rule) => ({
+      securityGroupId: group.groupId,
+      direction: 'egress' as const,
+      protocol: rule.protocol,
+      fromPort: rule.portRange === 'All' ? -1 : Number(rule.portRange.split('-')[0] ?? '-1'),
+      toPort: rule.portRange === 'All'
+        ? -1
+        : Number((rule.portRange.includes('-') ? rule.portRange.split('-')[1] : rule.portRange) ?? '-1'),
+      source: rule.destination,
+      description: rule.description
+    }))
+  ])
+}
+
+async function listEksNodegroupSummaries(connection: AwsConnection, clusters: EksClusterSummary[]): Promise<EksNodegroupLiveSummary[]> {
+  const nodegroups = await Promise.all(clusters.map(async (cluster) => {
+    const items = await listEksNodegroups(connection, cluster.name)
+    return items.map((item) => ({
+      clusterName: cluster.name,
+      nodegroupName: item.name,
+      status: item.status,
+      minSize: typeof item.min === 'number' ? item.min : Number(item.min) || 0,
+      desiredSize: typeof item.desired === 'number' ? item.desired : Number(item.desired) || 0,
+      maxSize: typeof item.max === 'number' ? item.max : Number(item.max) || 0,
+      instanceTypes: item.instanceTypes === '-' ? [] : item.instanceTypes.split(',').map((value) => value.trim()).filter(Boolean).sort()
+    }))
+  }))
+  return nodegroups.flat()
+}
+
+function sanitizeSnapshot(snapshot: TerraformDriftSnapshot): TerraformDriftSnapshot {
+  const items = snapshot.items.filter((item) => item.status !== 'unmanaged_in_aws')
+  return {
+    ...snapshot,
+    items,
+    summary: buildSummary(items, snapshot.summary.supportedResourceTypes.length > 0 ? snapshot.summary.supportedResourceTypes : supportedCoverage(), snapshot.scannedAt)
+  }
+}
+
+function sanitizeStoredContext(context: StoredDriftContext): StoredDriftContext {
+  return {
+    ...context,
+    snapshots: context.snapshots.map((snapshot) => sanitizeSnapshot(snapshot))
+  }
 }
 
 function coverageItem(resourceType: string, verifiedChecks: string[], inferredChecks: string[], notes: string[]): TerraformDriftCoverageItem {
@@ -422,36 +716,6 @@ function buildSupportedItems<TLive>(
     })
   }
 
-  for (const liveResource of liveResources) {
-    if (matchedLiveKeys.has(stableComparableKey(liveResource))) continue
-    const relatedTerraformAddresses = inferRelatedAddresses(liveResource, terraformResources)
-    const differences = relatedTerraformAddresses.length > 0
-      ? [createDifference('heuristic:related-address', 'possible Terraform address', 'heuristic', relatedTerraformAddresses.join(', '), liveResource.logicalName, 'inferred')]
-      : []
-    items.push({
-      terraformAddress: '',
-      resourceType: type,
-      logicalName: liveResource.logicalName,
-      cloudIdentifier: liveResource.cloudIdentifier,
-      region: liveResource.region,
-      status: 'unmanaged_in_aws',
-      assessment: 'verified',
-      explanation: 'A live AWS resource exists for this supported type, but no matching Terraform-managed state address references it.',
-      suggestedNextStep: relatedTerraformAddresses.length > 0
-        ? `Inspect the live resource and the likely Terraform addresses (${relatedTerraformAddresses.join(', ')}). If it should be managed, import it or update the state; otherwise document the exception.`
-        : 'Inspect the live resource in AWS. If it should be Terraform-managed, add configuration and terraform import it; otherwise document why it remains intentionally unmanaged.',
-      consoleUrl: liveResource.consoleUrl,
-      terminalCommand: '',
-      differences,
-      evidence: [
-        `Live ${type} resource was scanned in AWS.`,
-        'No Terraform state address matched its cloud identifier or logical name.',
-        ...(relatedTerraformAddresses.length > 0 ? [`Related Terraform addresses inferred by name/tag heuristic: ${relatedTerraformAddresses.join(', ')}`] : [])
-      ],
-      relatedTerraformAddresses
-    })
-  }
-
   return items
 }
 
@@ -502,16 +766,14 @@ function normalizeAwsSecurityGroup(item: TerraformResourceInventoryItem, connect
     cloudIdentifier: str(values.id),
     region,
     consoleUrl: consoleUrl(`ec2/v2/home?region=${region}#SecurityGroup:groupId=${str(values.id)}`, region),
-    attributes: {
-      name: str(values.name),
-      vpc_id: str(values.vpc_id),
-      description: str(values.description),
-      ingress_rules: count(values.ingress),
-      egress_rules: count(values.egress)
-    },
-    tags: terraformTags(values)
+      attributes: {
+        name: str(values.name),
+        vpc_id: str(values.vpc_id),
+        description: str(values.description)
+      },
+      tags: terraformTags(values)
+    }
   }
-}
 
 function normalizeAwsVpc(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
   const values = item.values
@@ -558,18 +820,13 @@ function normalizeAwsRouteTable(item: TerraformResourceInventoryItem, connection
   return {
     resourceType: item.type,
     logicalName: tags.Name || item.name,
-    cloudIdentifier: str(values.id),
-    region,
-    consoleUrl: consoleUrl(`vpcconsole/home?region=${region}#RouteTableDetails:routeTableId=${str(values.id)}`, region),
-    attributes: {
-      vpc_id: str(values.vpc_id),
-      is_main: bool(firstObject(values.association).main) ?? false,
-      associated_subnet_count: count(values.association),
-      route_count: count(values.route)
-    },
-    tags
+      cloudIdentifier: str(values.id),
+      region,
+      consoleUrl: consoleUrl(`vpcconsole/home?region=${region}#RouteTableDetails:routeTableId=${str(values.id)}`, region),
+      attributes: { vpc_id: str(values.vpc_id) },
+      tags
+    }
   }
-}
 
 function normalizeAwsInternetGateway(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
   const values = item.values
@@ -577,16 +834,16 @@ function normalizeAwsInternetGateway(item: TerraformResourceInventoryItem, conne
   if (region !== connection.region) return null
   const tags = terraformTags(values)
   const attachment = firstObject(values.attachment)
-  return {
-    resourceType: item.type,
-    logicalName: tags.Name || item.name,
-    cloudIdentifier: str(values.id),
-    region,
-    consoleUrl: consoleUrl(`vpcconsole/home?region=${region}#InternetGatewayDetails:internetGatewayId=${str(values.id)}`, region),
-    attributes: { attached_vpc_id: str(attachment.vpc_id), state: str(attachment.state) },
-    tags
+    return {
+      resourceType: item.type,
+      logicalName: tags.Name || item.name,
+      cloudIdentifier: str(values.id),
+      region,
+      consoleUrl: consoleUrl(`vpcconsole/home?region=${region}#InternetGatewayDetails:internetGatewayId=${str(values.id)}`, region),
+      attributes: { vpc_id: str(values.vpc_id) || str(attachment.vpc_id) },
+      tags
+    }
   }
-}
 
 function normalizeAwsNatGateway(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
   const values = item.values
@@ -599,15 +856,14 @@ function normalizeAwsNatGateway(item: TerraformResourceInventoryItem, connection
     cloudIdentifier: str(values.id),
     region,
     consoleUrl: consoleUrl(`vpc/home?region=${region}#NatGatewayDetails:natGatewayId=${str(values.id)}`, region),
-    attributes: {
-      subnet_id: str(values.subnet_id),
-      vpc_id: str(values.vpc_id),
-      connectivity_type: str(values.connectivity_type),
-      state: str(values.state)
-    },
-    tags
+      attributes: {
+        subnet_id: str(values.subnet_id),
+        vpc_id: str(values.vpc_id),
+        connectivity_type: str(values.connectivity_type)
+      },
+      tags
+    }
   }
-}
 
 function normalizeAwsTransitGateway(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
   const values = item.values
@@ -768,6 +1024,212 @@ function normalizeAwsEcrRepository(item: TerraformResourceInventoryItem, connect
   }
 }
 
+function normalizeAwsEcsCluster(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  const name = str(values.name)
+  return {
+    resourceType: item.type,
+    logicalName: name || item.name,
+    cloudIdentifier: extractArn(values) || name,
+    region,
+    consoleUrl: consoleUrl(`ecs/v2/clusters/${encodeURIComponent(name)}/services?region=${region}`, region),
+    attributes: { cluster_name: name },
+    tags: terraformTags(values)
+  }
+}
+
+function normalizeAwsEcsClusterCapacityProviders(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  const clusterName = str(values.cluster_name)
+  return {
+    resourceType: item.type,
+    logicalName: clusterName || item.name,
+    cloudIdentifier: clusterName,
+    region,
+    consoleUrl: consoleUrl(`ecs/v2/clusters/${encodeURIComponent(clusterName)}/services?region=${region}`, region),
+    attributes: {
+      cluster_name: clusterName,
+      capacity_providers: list(values.capacity_providers).sort().join(','),
+      default_strategy: canonicalCapacityProviderStrategy(values.default_capacity_provider_strategy).join(',')
+    },
+    tags: {}
+  }
+}
+
+function normalizeAwsEksNodeGroup(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  const clusterName = str(values.cluster_name)
+  const nodeGroupName = str(values.node_group_name) || str(values.nodegroup_name)
+  const scaling = firstObject(values.scaling_config)
+  return {
+    resourceType: item.type,
+    logicalName: `${clusterName}/${nodeGroupName}`,
+    cloudIdentifier: `${clusterName}:${nodeGroupName}`,
+    region,
+    consoleUrl: consoleUrl(`eks/home?region=${region}#/clusters/${encodeURIComponent(clusterName)}/nodegroups/${encodeURIComponent(nodeGroupName)}`, region),
+    attributes: {
+      cluster_name: clusterName,
+      nodegroup_name: nodeGroupName,
+      min_size: num(scaling.min_size) ?? 0,
+      desired_size: num(scaling.desired_size) ?? 0,
+      max_size: num(scaling.max_size) ?? 0,
+      instance_types: list(values.instance_types).sort().join(',')
+    },
+    tags: terraformTags(values)
+  }
+}
+
+function normalizeAwsIamRole(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const name = str(values.name)
+  return {
+    resourceType: item.type,
+    logicalName: name || item.name,
+    cloudIdentifier: extractArn(values) || name,
+    region: connection.region,
+    consoleUrl: consoleUrl(`iamv2/home#/roles/details/${encodeURIComponent(name)}`, connection.region),
+    attributes: { role_name: name, max_session_duration: num(values.max_session_duration) ?? 3600 },
+    tags: {}
+  }
+}
+
+function normalizeAwsIamRolePolicyAttachment(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const roleName = str(values.role)
+  const policyArn = str(values.policy_arn)
+  return {
+    resourceType: item.type,
+    logicalName: `${roleName}:${policyArn}`,
+    cloudIdentifier: `${roleName}:${policyArn}`,
+    region: connection.region,
+    consoleUrl: consoleUrl(`iamv2/home#/roles/details/${encodeURIComponent(roleName)}`, connection.region),
+    attributes: { role_name: roleName, policy_arn: policyArn },
+    tags: {}
+  }
+}
+
+function normalizeAwsElasticIp(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  return {
+    resourceType: item.type,
+    logicalName: str(values.public_ip) || item.name,
+    cloudIdentifier: str(values.allocation_id) || str(values.id),
+    region,
+    consoleUrl: consoleUrl(`ec2/v2/home?region=${region}#Addresses:search=${encodeURIComponent(str(values.allocation_id) || str(values.public_ip))}`, region),
+    attributes: {
+      allocation_id: str(values.allocation_id) || str(values.id),
+      public_ip: str(values.public_ip),
+      domain: str(values.domain),
+      network_interface_id: str(values.network_interface),
+      instance_id: str(values.instance)
+    },
+    tags: terraformTags(values)
+  }
+}
+
+function normalizeAwsDbSubnetGroup(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  const name = str(values.name)
+  return {
+    resourceType: item.type,
+    logicalName: name || item.name,
+    cloudIdentifier: str(values.arn) || name,
+    region,
+    consoleUrl: consoleUrl(`rds/home?region=${region}#subnet-group:id=${encodeURIComponent(name)}`, region),
+    attributes: {
+      name,
+      description: str(values.description),
+      subnet_count: list(values.subnet_ids).length
+    },
+    tags: {}
+  }
+}
+
+function normalizeAwsRdsClusterInstance(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  const identifier = str(values.identifier) || str(values.id)
+  return {
+    resourceType: item.type,
+    logicalName: identifier || item.name,
+    cloudIdentifier: extractArn(values) || identifier,
+    region,
+    consoleUrl: consoleUrl(`rds/home?region=${region}#database:id=${identifier};is-cluster=false`, region),
+    attributes: {
+      db_instance_identifier: identifier,
+      cluster_identifier: str(values.cluster_identifier),
+      engine: str(values.engine),
+      db_instance_class: str(values.instance_class),
+      availability_zone: str(values.availability_zone)
+    },
+    tags: terraformTags(values)
+  }
+}
+
+function normalizeAwsRouteTableAssociation(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  const subnetId = str(values.subnet_id)
+  const gatewayId = str(values.gateway_id)
+  const routeTableId = str(values.route_table_id)
+  const logicalKey = `${routeTableId}|${subnetId || gatewayId || (bool(values.main) ? 'main' : '')}`
+  return {
+    resourceType: item.type,
+    logicalName: logicalKey,
+    cloudIdentifier: logicalKey,
+    region,
+    consoleUrl: consoleUrl(`vpcconsole/home?region=${region}#RouteTableDetails:routeTableId=${routeTableId}`, region),
+    attributes: {
+      route_table_id: routeTableId,
+      subnet_id: subnetId,
+      gateway_id: gatewayId,
+      is_main: bool(values.main) ?? false
+    },
+    tags: {}
+  }
+}
+
+function normalizeAwsSecurityGroupRule(item: TerraformResourceInventoryItem, connection: AwsConnection): ComparableResource | null {
+  const values = item.values
+  const region = extractRegion(values) || connection.region
+  if (region !== connection.region) return null
+  const direction = str(values.type) === 'egress' ? 'egress' : 'ingress'
+  const groupId = str(values.security_group_id)
+  const protocol = str(values.protocol)
+  const fromPort = num(values.from_port) ?? -1
+  const toPort = num(values.to_port) ?? -1
+  const source = normalizeRuleSource(values, direction)
+  const key = canonicalSecurityGroupRuleKey(groupId, direction, protocol, fromPort, toPort, source)
+  return {
+    resourceType: item.type,
+    logicalName: key,
+    cloudIdentifier: key,
+    region,
+    consoleUrl: consoleUrl(`ec2/v2/home?region=${region}#SecurityGroup:groupId=${groupId}`, region),
+    attributes: {
+      security_group_id: groupId,
+      direction,
+      protocol: normalizeRuleProtocol(protocol),
+      from_port: fromPort,
+      to_port: toPort,
+      source
+    },
+    tags: {}
+  }
+}
+
 const SUPPORTED_HANDLERS: { [K in SupportedResourceType]: SupportedHandler<LiveInventory[K][number]> } = {
   aws_instance: {
     normalizeTerraform: normalizeAwsInstance,
@@ -793,13 +1255,13 @@ const SUPPORTED_HANDLERS: { [K in SupportedResourceType]: SupportedHandler<LiveI
       cloudIdentifier: group.groupId,
       region: connection.region,
       consoleUrl: consoleUrl(`ec2/v2/home?region=${connection.region}#SecurityGroup:groupId=${group.groupId}`, connection.region),
-      attributes: { name: group.groupName, vpc_id: group.vpcId, description: group.description, ingress_rules: group.inboundRuleCount, egress_rules: group.outboundRuleCount },
+      attributes: { name: group.groupName, vpc_id: group.vpcId, description: group.description },
       tags: group.tags
     }),
     identityKeys: ['cloudIdentifier', 'logicalName'],
-    verifiedChecks: ['group name', 'description', 'VPC', 'ingress/egress rule counts', 'tags'],
+    verifiedChecks: ['group name', 'description', 'VPC', 'tags'],
     inferredChecks: ['possible related Terraform addresses by name/tag heuristic'],
-    notes: ['Security group rule contents are not exhaustively diffed yet.']
+    notes: ['Security group rules may be managed by separate Terraform resources, so this workspace does not verify rule counts here.']
   },
   aws_vpc: {
     normalizeTerraform: normalizeAwsVpc,
@@ -841,13 +1303,13 @@ const SUPPORTED_HANDLERS: { [K in SupportedResourceType]: SupportedHandler<LiveI
       cloudIdentifier: routeTable.routeTableId,
       region: connection.region,
       consoleUrl: consoleUrl(`vpcconsole/home?region=${connection.region}#RouteTableDetails:routeTableId=${routeTable.routeTableId}`, connection.region),
-      attributes: { vpc_id: routeTable.vpcId, is_main: routeTable.isMain, associated_subnet_count: routeTable.associatedSubnets.length, route_count: routeTable.routes.length },
+      attributes: { vpc_id: routeTable.vpcId },
       tags: routeTable.tags
     }),
     identityKeys: ['cloudIdentifier', 'logicalName'],
-    verifiedChecks: ['VPC', 'main-route-table flag', 'associated subnet count', 'route count', 'tags'],
+    verifiedChecks: ['VPC', 'tags'],
     inferredChecks: ['possible related Terraform addresses by name/tag heuristic'],
-    notes: ['Individual route targets are not exhaustively compared yet.']
+    notes: ['Associations and route entries can be managed by separate Terraform resources or include AWS-managed defaults, so they are not verified here.']
   },
   aws_internet_gateway: {
     normalizeTerraform: normalizeAwsInternetGateway,
@@ -857,13 +1319,13 @@ const SUPPORTED_HANDLERS: { [K in SupportedResourceType]: SupportedHandler<LiveI
       cloudIdentifier: gateway.igwId,
       region: connection.region,
       consoleUrl: consoleUrl(`vpcconsole/home?region=${connection.region}#InternetGatewayDetails:internetGatewayId=${gateway.igwId}`, connection.region),
-      attributes: { attached_vpc_id: gateway.attachedVpcId, state: gateway.state },
+      attributes: { vpc_id: gateway.attachedVpcId },
       tags: gateway.tags
     }),
     identityKeys: ['cloudIdentifier', 'logicalName'],
-    verifiedChecks: ['attached VPC', 'attachment state', 'tags'],
+    verifiedChecks: ['attached VPC', 'tags'],
     inferredChecks: ['possible related Terraform addresses by name/tag heuristic'],
-    notes: []
+    notes: ['Attachment state is AWS-computed and is not treated as verified drift.']
   },
   aws_nat_gateway: {
     normalizeTerraform: normalizeAwsNatGateway,
@@ -873,13 +1335,13 @@ const SUPPORTED_HANDLERS: { [K in SupportedResourceType]: SupportedHandler<LiveI
       cloudIdentifier: gateway.natGatewayId,
       region: connection.region,
       consoleUrl: consoleUrl(`vpc/home?region=${connection.region}#NatGatewayDetails:natGatewayId=${gateway.natGatewayId}`, connection.region),
-      attributes: { subnet_id: gateway.subnetId, vpc_id: gateway.vpcId, connectivity_type: gateway.connectivityType, state: gateway.state },
+      attributes: { subnet_id: gateway.subnetId, vpc_id: gateway.vpcId, connectivity_type: gateway.connectivityType },
       tags: gateway.tags
     }),
     identityKeys: ['cloudIdentifier', 'logicalName'],
-    verifiedChecks: ['subnet', 'VPC', 'connectivity type', 'state', 'tags'],
+    verifiedChecks: ['subnet', 'VPC', 'connectivity type', 'tags'],
     inferredChecks: ['possible related Terraform addresses by name/tag heuristic'],
-    notes: []
+    notes: ['NAT gateway lifecycle state is AWS-computed and is not treated as verified drift.']
   },
   aws_ec2_transit_gateway: {
     normalizeTerraform: normalizeAwsTransitGateway,
@@ -1028,6 +1490,201 @@ const SUPPORTED_HANDLERS: { [K in SupportedResourceType]: SupportedHandler<LiveI
     verifiedChecks: ['cluster name', 'Kubernetes version', 'role ARN', 'tags'],
     inferredChecks: ['possible related Terraform addresses by name heuristic'],
     notes: ['Subnet and security-group counts are only verified when present in Terraform state.']
+  },
+  aws_ecs_cluster: {
+    normalizeTerraform: normalizeAwsEcsCluster,
+    normalizeLive: (cluster, connection) => ({
+      resourceType: 'aws_ecs_cluster',
+      logicalName: cluster.clusterName,
+      cloudIdentifier: cluster.clusterArn,
+      region: connection.region,
+      consoleUrl: consoleUrl(`ecs/v2/clusters/${encodeURIComponent(cluster.clusterName)}/services?region=${connection.region}`, connection.region),
+      attributes: { cluster_name: cluster.clusterName },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['cluster name'],
+    inferredChecks: ['possible related Terraform addresses by name heuristic'],
+    notes: ['Operational task and service counts are not treated as drift.']
+  },
+  aws_ecs_cluster_capacity_providers: {
+    normalizeTerraform: normalizeAwsEcsClusterCapacityProviders,
+    normalizeLive: (cluster, connection) => ({
+      resourceType: 'aws_ecs_cluster_capacity_providers',
+      logicalName: cluster.clusterName,
+      cloudIdentifier: cluster.clusterName,
+      region: connection.region,
+      consoleUrl: consoleUrl(`ecs/v2/clusters/${encodeURIComponent(cluster.clusterName)}/services?region=${connection.region}`, connection.region),
+      attributes: {
+        cluster_name: cluster.clusterName,
+        capacity_providers: cluster.capacityProviders.join(','),
+        default_strategy: cluster.defaultStrategy.join(',')
+      },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['cluster name', 'capacity providers', 'default strategy'],
+    inferredChecks: [],
+    notes: []
+  },
+  aws_eks_node_group: {
+    normalizeTerraform: normalizeAwsEksNodeGroup,
+    normalizeLive: (nodegroup, connection) => ({
+      resourceType: 'aws_eks_node_group',
+      logicalName: `${nodegroup.clusterName}/${nodegroup.nodegroupName}`,
+      cloudIdentifier: `${nodegroup.clusterName}:${nodegroup.nodegroupName}`,
+      region: connection.region,
+      consoleUrl: consoleUrl(`eks/home?region=${connection.region}#/clusters/${encodeURIComponent(nodegroup.clusterName)}/nodegroups/${encodeURIComponent(nodegroup.nodegroupName)}`, connection.region),
+      attributes: {
+        cluster_name: nodegroup.clusterName,
+        nodegroup_name: nodegroup.nodegroupName,
+        min_size: nodegroup.minSize,
+        desired_size: nodegroup.desiredSize,
+        max_size: nodegroup.maxSize,
+        instance_types: nodegroup.instanceTypes.join(',')
+      },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['cluster', 'node group name', 'scaling config', 'instance types'],
+    inferredChecks: [],
+    notes: ['Node status and release version are not treated as drift.']
+  },
+  aws_iam_role: {
+    normalizeTerraform: normalizeAwsIamRole,
+    normalizeLive: (role, connection) => ({
+      resourceType: 'aws_iam_role',
+      logicalName: role.roleName,
+      cloudIdentifier: role.arn,
+      region: connection.region,
+      consoleUrl: consoleUrl(`iamv2/home#/roles/details/${encodeURIComponent(role.roleName)}`, connection.region),
+      attributes: { role_name: role.roleName, max_session_duration: role.maxSessionDuration },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['role name', 'max session duration'],
+    inferredChecks: [],
+    notes: ['Assume-role policy and tags are not yet verified here.']
+  },
+  aws_iam_role_policy_attachment: {
+    normalizeTerraform: normalizeAwsIamRolePolicyAttachment,
+    normalizeLive: (attachment, connection) => ({
+      resourceType: 'aws_iam_role_policy_attachment',
+      logicalName: `${attachment.roleName}:${attachment.policyArn}`,
+      cloudIdentifier: `${attachment.roleName}:${attachment.policyArn}`,
+      region: connection.region,
+      consoleUrl: consoleUrl(`iamv2/home#/roles/details/${encodeURIComponent(attachment.roleName)}`, connection.region),
+      attributes: { role_name: attachment.roleName, policy_arn: attachment.policyArn },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['role', 'attached policy ARN'],
+    inferredChecks: [],
+    notes: []
+  },
+  aws_eip: {
+    normalizeTerraform: normalizeAwsElasticIp,
+    normalizeLive: (address, connection) => ({
+      resourceType: 'aws_eip',
+      logicalName: address.publicIp,
+      cloudIdentifier: address.allocationId,
+      region: connection.region,
+      consoleUrl: consoleUrl(`ec2/v2/home?region=${connection.region}#Addresses:search=${encodeURIComponent(address.allocationId || address.publicIp)}`, connection.region),
+      attributes: {
+        allocation_id: address.allocationId,
+        public_ip: address.publicIp,
+        domain: address.domain,
+        network_interface_id: address.networkInterfaceId,
+        instance_id: address.instanceId
+      },
+      tags: address.tags
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['allocation ID', 'public IP', 'domain', 'attachment', 'tags'],
+    inferredChecks: [],
+    notes: []
+  },
+  aws_db_subnet_group: {
+    normalizeTerraform: normalizeAwsDbSubnetGroup,
+    normalizeLive: (group, connection) => ({
+      resourceType: 'aws_db_subnet_group',
+      logicalName: group.name,
+      cloudIdentifier: group.name,
+      region: connection.region,
+      consoleUrl: consoleUrl(`rds/home?region=${connection.region}#subnet-group:id=${encodeURIComponent(group.name)}`, connection.region),
+      attributes: { name: group.name, description: group.description, subnet_count: group.subnetCount },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['subnet group name', 'description', 'subnet count'],
+    inferredChecks: [],
+    notes: ['Subnet membership is reduced to count rather than exact subnet IDs.']
+  },
+  aws_rds_cluster_instance: {
+    normalizeTerraform: normalizeAwsRdsClusterInstance,
+    normalizeLive: (instance, connection) => ({
+      resourceType: 'aws_rds_cluster_instance',
+      logicalName: instance.dbInstanceIdentifier,
+      cloudIdentifier: instance.dbInstanceIdentifier,
+      region: connection.region,
+      consoleUrl: consoleUrl(`rds/home?region=${connection.region}#database:id=${instance.dbInstanceIdentifier};is-cluster=false`, connection.region),
+      attributes: {
+        db_instance_identifier: instance.dbInstanceIdentifier,
+        cluster_identifier: instance.dbClusterIdentifier,
+        engine: instance.engine,
+        db_instance_class: instance.dbInstanceClass,
+        availability_zone: instance.availabilityZone
+      },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['instance identifier', 'cluster identifier', 'engine', 'instance class', 'availability zone'],
+    inferredChecks: [],
+    notes: []
+  },
+  aws_route_table_association: {
+    normalizeTerraform: normalizeAwsRouteTableAssociation,
+    normalizeLive: (association, connection) => ({
+      resourceType: 'aws_route_table_association',
+      logicalName: `${association.routeTableId}|${association.subnetId || association.gatewayId || (association.isMain ? 'main' : '')}`,
+      cloudIdentifier: `${association.routeTableId}|${association.subnetId || association.gatewayId || (association.isMain ? 'main' : '')}`,
+      region: connection.region,
+      consoleUrl: consoleUrl(`vpcconsole/home?region=${connection.region}#RouteTableDetails:routeTableId=${association.routeTableId}`, connection.region),
+      attributes: {
+        route_table_id: association.routeTableId,
+        subnet_id: association.subnetId,
+        gateway_id: association.gatewayId,
+        is_main: association.isMain
+      },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['route table association target'],
+    inferredChecks: [],
+    notes: ['Associations are matched by route table plus subnet/gateway target, not the opaque association ID.']
+  },
+  aws_security_group_rule: {
+    normalizeTerraform: normalizeAwsSecurityGroupRule,
+    normalizeLive: (rule, connection) => ({
+      resourceType: 'aws_security_group_rule',
+      logicalName: canonicalSecurityGroupRuleKey(rule.securityGroupId, rule.direction, rule.protocol, rule.fromPort, rule.toPort, rule.source),
+      cloudIdentifier: canonicalSecurityGroupRuleKey(rule.securityGroupId, rule.direction, rule.protocol, rule.fromPort, rule.toPort, rule.source),
+      region: connection.region,
+      consoleUrl: consoleUrl(`ec2/v2/home?region=${connection.region}#SecurityGroup:groupId=${rule.securityGroupId}`, connection.region),
+      attributes: {
+        security_group_id: rule.securityGroupId,
+        direction: rule.direction,
+        protocol: normalizeRuleProtocol(rule.protocol),
+        from_port: rule.fromPort,
+        to_port: rule.toPort,
+        source: rule.source
+      },
+      tags: {}
+    }),
+    identityKeys: ['cloudIdentifier', 'logicalName'],
+    verifiedChecks: ['group', 'direction', 'protocol', 'port range', 'source'],
+    inferredChecks: [],
+    notes: ['Rule descriptions are not verified because AWS summaries may collapse per-source descriptions.']
   }
 }
 
@@ -1047,7 +1704,13 @@ async function loadLiveInventory(connection: AwsConnection): Promise<LiveInvento
     rdsInstances,
     rdsClusters,
     ecrRepositories,
-    eksClusters
+    eksClusters,
+    ecsClusters,
+    ecsClusterCapacityProviders,
+    iamRoles,
+    elasticIps,
+    dbSubnetGroups,
+    auroraClusterInstances
   ] = await Promise.all([
     listEc2Instances(connection),
     listSecurityGroups(connection),
@@ -1063,8 +1726,20 @@ async function loadLiveInventory(connection: AwsConnection): Promise<LiveInvento
     listDbInstances(connection),
     listDbClusters(connection),
     listEcrRepositories(connection),
-    listEksClusters(connection)
+    listEksClusters(connection),
+    listEcsClusters(connection),
+    listEcsClusterCapacityProviders(connection),
+    listIamRoles(connection),
+    listElasticIps(connection),
+    listDbSubnetGroups(connection),
+    listAuroraClusterInstances(connection)
   ])
+  const [eksNodegroups, iamRolePolicyAttachments] = await Promise.all([
+    listEksNodegroupSummaries(connection, eksClusters),
+    listIamRolePolicyAttachments(connection, iamRoles)
+  ])
+  const routeTableAssociations = flattenRouteTableAssociations(routeTables)
+  const securityGroupRules = flattenSecurityGroupRules(securityGroups)
 
   return {
     aws_instance: instances,
@@ -1081,7 +1756,17 @@ async function loadLiveInventory(connection: AwsConnection): Promise<LiveInvento
     aws_db_instance: rdsInstances,
     aws_rds_cluster: rdsClusters,
     aws_ecr_repository: ecrRepositories,
-    aws_eks_cluster: eksClusters
+    aws_eks_cluster: eksClusters,
+    aws_ecs_cluster: ecsClusters,
+    aws_ecs_cluster_capacity_providers: ecsClusterCapacityProviders,
+    aws_eks_node_group: eksNodegroups,
+    aws_iam_role: iamRoles,
+    aws_iam_role_policy_attachment: iamRolePolicyAttachments,
+    aws_eip: elasticIps,
+    aws_db_subnet_group: dbSubnetGroups,
+    aws_rds_cluster_instance: auroraClusterInstances,
+    aws_route_table_association: routeTableAssociations,
+    aws_security_group_rule: securityGroupRules
   }
 }
 
@@ -1109,15 +1794,23 @@ async function scanProjectDrift(
     ...buildSupportedItems(project, connection, 'aws_rds_cluster', project.inventory, liveInventory.aws_rds_cluster, SUPPORTED_HANDLERS.aws_rds_cluster),
     ...buildSupportedItems(project, connection, 'aws_ecr_repository', project.inventory, liveInventory.aws_ecr_repository, SUPPORTED_HANDLERS.aws_ecr_repository),
     ...buildSupportedItems(project, connection, 'aws_eks_cluster', project.inventory, liveInventory.aws_eks_cluster, SUPPORTED_HANDLERS.aws_eks_cluster),
+    ...buildSupportedItems(project, connection, 'aws_ecs_cluster', project.inventory, liveInventory.aws_ecs_cluster, SUPPORTED_HANDLERS.aws_ecs_cluster),
+    ...buildSupportedItems(project, connection, 'aws_ecs_cluster_capacity_providers', project.inventory, liveInventory.aws_ecs_cluster_capacity_providers, SUPPORTED_HANDLERS.aws_ecs_cluster_capacity_providers),
+    ...buildSupportedItems(project, connection, 'aws_eks_node_group', project.inventory, liveInventory.aws_eks_node_group, SUPPORTED_HANDLERS.aws_eks_node_group),
+    ...buildSupportedItems(project, connection, 'aws_iam_role', project.inventory, liveInventory.aws_iam_role, SUPPORTED_HANDLERS.aws_iam_role),
+    ...buildSupportedItems(project, connection, 'aws_iam_role_policy_attachment', project.inventory, liveInventory.aws_iam_role_policy_attachment, SUPPORTED_HANDLERS.aws_iam_role_policy_attachment),
+    ...buildSupportedItems(project, connection, 'aws_eip', project.inventory, liveInventory.aws_eip, SUPPORTED_HANDLERS.aws_eip),
+    ...buildSupportedItems(project, connection, 'aws_db_subnet_group', project.inventory, liveInventory.aws_db_subnet_group, SUPPORTED_HANDLERS.aws_db_subnet_group),
+    ...buildSupportedItems(project, connection, 'aws_rds_cluster_instance', project.inventory, liveInventory.aws_rds_cluster_instance, SUPPORTED_HANDLERS.aws_rds_cluster_instance),
+    ...buildSupportedItems(project, connection, 'aws_route_table_association', project.inventory, liveInventory.aws_route_table_association, SUPPORTED_HANDLERS.aws_route_table_association),
+    ...buildSupportedItems(project, connection, 'aws_security_group_rule', project.inventory, liveInventory.aws_security_group_rule, SUPPORTED_HANDLERS.aws_security_group_rule),
     ...buildUnsupportedItems(project, project.inventory)
   ]
   const sorted = sortItems(items)
   const scannedAt = new Date().toISOString()
   const summary = buildSummary(
     sorted,
-    Object.entries(SUPPORTED_HANDLERS)
-      .map(([resourceType, handler]) => coverageItem(resourceType, handler.verifiedChecks, handler.inferredChecks, handler.notes))
-      .sort((left, right) => left.resourceType.localeCompare(right.resourceType)),
+    supportedCoverage(),
     scannedAt
   )
   const snapshot: TerraformDriftSnapshot = { id: randomUUID(), scannedAt, trigger, summary, items: sorted }
@@ -1134,15 +1827,16 @@ async function scanProjectDrift(
 }
 
 function toReport(context: StoredDriftContext, fromCache: boolean): TerraformDriftReport {
-  const latest = context.snapshots[0]
+  const sanitized = sanitizeStoredContext(context)
+  const latest = sanitized.snapshots[0]
   return {
-    projectId: context.projectId,
-    projectName: context.projectName,
-    profileName: context.profileName,
-    region: context.region,
+    projectId: sanitized.projectId,
+    projectName: sanitized.projectName,
+    profileName: sanitized.profileName,
+    region: sanitized.region,
     summary: latest?.summary ?? buildSummary([], [], ''),
     items: latest?.items ?? [],
-    history: buildHistory(context.snapshots),
+    history: buildHistory(sanitized.snapshots),
     fromCache
   }
 }
@@ -1155,7 +1849,9 @@ export async function getTerraformDriftReport(
 ): Promise<TerraformDriftReport> {
   const existing = readStoredContext(profileName, projectId, connection.region)
   if (existing && !options?.forceRefresh) {
-    return toReport(existing, true)
+    const sanitized = sanitizeStoredContext(existing)
+    writeStoredContext(profileName, projectId, connection.region, sanitized)
+    return toReport(sanitized, true)
   }
   const scanned = await scanProjectDrift(profileName, projectId, connection, existing ? 'manual' : 'initial')
   return toReport(scanned, false)

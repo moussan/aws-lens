@@ -193,11 +193,16 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function terraformContextKey(connection: AwsConnection): string {
-  return connection.kind === 'profile'
-    ? `profile:${connection.profile}`
-    : `assumed-role:${connection.sessionId}`
-}
+  function terraformContextKey(connection: AwsConnection): string {
+    return connection.kind === 'profile'
+      ? `profile:${connection.profile}`
+      : `assumed-role:${connection.sessionId}`
+  }
+
+  function connectionForProject(connection: AwsConnection, project: TerraformProject | null): AwsConnection {
+    const region = project?.environment.region || connection.region
+    return region === connection.region ? connection : { ...connection, region }
+  }
 
 /* ── Inputs Dialog ────────────────────────────────────────── */
 
@@ -2633,6 +2638,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
 
   const cliOk = cliInfo?.found === true
   const contextKey = terraformContextKey(connection)
+  const projectConnection = connectionForProject(connection, detail)
 
   // Detect CLI on mount
   useEffect(() => {
@@ -2687,7 +2693,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     setDriftLoading(true)
     setDriftError('')
     try {
-      const report = await getDrift(contextKey, detail.id, connection, options)
+      const report = await getDrift(contextKey, detail.id, projectConnection, options)
       setDriftReport(report)
       setSelectedDriftKey((current) => current || (report.items[0] ? driftItemKey(report.items[0]) : ''))
     } catch (err) {
@@ -2695,13 +2701,29 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     } finally {
       setDriftLoading(false)
     }
-  }, [connection, detail])
+  }, [contextKey, detail, projectConnection])
+
+  const detailTabRef = useRef(detailTab)
+  const loadDriftRef = useRef(loadDrift)
+  const reloadRef = useRef(reload)
+
+  useEffect(() => {
+    detailTabRef.current = detailTab
+  }, [detailTab])
+
+  useEffect(() => {
+    loadDriftRef.current = loadDrift
+  }, [loadDrift])
+
+  useEffect(() => {
+    reloadRef.current = reload
+  }, [reload])
 
   useEffect(() => {
     if (detailTab !== 'drift' || !detail) return
-    if (driftReport?.projectId === detail.id && driftReport.region === connection.region) return
+    if (driftReport?.projectId === detail.id && driftReport.region === projectConnection.region) return
     void loadDrift()
-  }, [connection.region, detail, detailTab, driftReport, loadDrift])
+  }, [detail, detailTab, driftReport, loadDrift, projectConnection.region])
 
   const loadLab = useCallback(async () => {
     if (!detail) return
@@ -2766,10 +2788,19 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
         const log = e.log as TerraformCommandLog
         setLastLog(log)
         if (e.project) setDetail(e.project as TerraformProject)
+        const refreshesDrift = log.success && ['apply', 'destroy', 'import', 'state-mv', 'state-rm'].includes(log.command)
+        if (refreshesDrift) {
+          setDriftReport(null)
+          setDriftError('')
+          setSelectedDriftKey('')
+          if (detailTabRef.current === 'drift') {
+            void loadDriftRef.current({ forceRefresh: true })
+          }
+        }
         if (log.success && ['import', 'state-mv', 'state-rm', 'force-unlock'].includes(log.command)) {
           setMsg(`Completed ${log.command}. Project state views were reloaded.`)
         }
-        void reload()
+        void reloadRef.current()
       } else if (e.type === 'started') {
         setRunning(true)
         setShowProgress(true)
@@ -2799,7 +2830,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand }: { connect
     }
     subscribe(handleEvent)
     return () => unsubscribe(handleEvent)
-  }, [reload])
+  }, [])
 
   // Handlers
   async function handleAddProject() {

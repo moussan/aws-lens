@@ -54,6 +54,7 @@ import { getProjects, setProjects } from './store'
 import { resolveTerraformSecretReference } from './aws/terraformInputs'
 import { getConnectionEnv } from './sessionHub'
 import { saveRunRecord, updateRunRecord, redactArgs } from './terraformHistoryStore'
+import { invalidateTerraformDriftReports } from './terraformDrift'
 import type { TerraformRunRecord } from '@shared/types'
 
 /* ── Stored project shape (persistence) ───────────────────── */
@@ -1482,8 +1483,26 @@ function buildResourceRows(inventory: TerraformResourceInventoryItem[]): Terrafo
       region: extractRegion(i.values),
       changedBy: '',
       tags: serializeTags(i.values)
-    }))
-    .sort((a, b) => a.category.localeCompare(b.category) || a.address.localeCompare(b.address))
+      }))
+      .sort((a, b) => a.category.localeCompare(b.category) || a.address.localeCompare(b.address))
+}
+
+function inferProjectRegion(
+  inventory: TerraformResourceInventoryItem[],
+  metadata: TerraformProjectMetadata,
+  project: StoredProject,
+  connection?: AwsConnection
+): string {
+  const counts = new Map<string, number>()
+  for (const item of inventory) {
+    if (item.mode !== 'managed') continue
+    const region = extractRegion(item.values)
+    if (!region) continue
+    counts.set(region, (counts.get(region) ?? 0) + 1)
+  }
+  const dominantRegion = [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0]
+  return dominantRegion || metadata.s3Backend?.region || project.environment?.region || connection?.region || ''
 }
 
 /* ── Diagram Builder ──────────────────────────────────────── */
@@ -2057,12 +2076,13 @@ function buildEnvironmentMetadata(
   profileName: string,
   connection: AwsConnection | undefined,
   metadata: TerraformProjectMetadata,
-  currentWorkspace: string
+  currentWorkspace: string,
+  inventory: TerraformResourceInventoryItem[]
 ): TerraformProjectEnvironmentMetadata {
   return {
     environmentLabel: inferEnvironmentLabel(currentWorkspace),
     workspaceName: currentWorkspace,
-    region: connection?.region ?? project.environment?.region ?? metadata.s3Backend?.region ?? '',
+    region: inferProjectRegion(inventory, metadata, project, connection),
     connectionLabel: displayConnectionLabel(profileName, connection) || project.environment?.connectionLabel || '',
     backendType: metadata.backendType,
     varSetLabel: inferVarSetLabel(project) || project.environment?.varSetLabel || ''
@@ -2193,7 +2213,7 @@ function loadProject(project: StoredProject, profileName = '', connection?: AwsC
         migratedFromLegacy: inputConfig.migratedFromLegacy
       },
       inputValidation,
-      environment: buildEnvironmentMetadata(project, profileName, connection, emptyMeta, currentWorkspace),
+      environment: buildEnvironmentMetadata(project, profileName, connection, emptyMeta, currentWorkspace, []),
       status: 'Missing', inputsFilePath: managedInputsPath(project.rootPath),
       workspaces: [{ name: currentWorkspace, isCurrent: true }],
       currentWorkspace,
@@ -2219,7 +2239,7 @@ function loadProject(project: StoredProject, profileName = '', connection?: AwsC
   const actionRows = buildActionRows(planChanges, inventory)
   const resourceRows = buildResourceRows(inventory)
   const diagram = buildDiagram(inventory, planChanges, project.rootPath)
-  const environment = buildEnvironmentMetadata(project, profileName, connection, metadata, currentWorkspace)
+  const environment = buildEnvironmentMetadata(project, profileName, connection, metadata, currentWorkspace, inventory)
   const stateBackups = listStateBackups(project.id)
   const stateLockInfo = readStateLockInfo(project.rootPath, metadata.backendType)
   const inputConfig = normalizeInputConfig(project)
@@ -2797,19 +2817,25 @@ export async function runProjectCommand(
         }
       }
     }
-    if (['import', 'state-mv', 'state-rm', 'force-unlock'].includes(request.command) && result.exitCode === 0) {
-      const refreshed = await refreshRemoteStateCache(project.rootPath, env)
-      if (!refreshed && request.command === 'state-rm') {
-        clearStateCache(project.rootPath)
-      }
+      if (['import', 'state-mv', 'state-rm', 'force-unlock'].includes(request.command) && result.exitCode === 0) {
+        const refreshed = await refreshRemoteStateCache(project.rootPath, env)
+        if (!refreshed && request.command === 'state-rm') {
+          clearStateCache(project.rootPath)
+        }
       if (request.command === 'import' || request.command === 'state-mv' || request.command === 'state-rm') {
         clearSavedPlanArtifacts(project.rootPath)
-        savedPlanPaths.delete(project.id)
+          savedPlanPaths.delete(project.id)
+        }
       }
-    }
-    if (request.command === 'state-pull' && result.exitCode === 0 && log.output.trim()) {
-      fs.writeFileSync(stateCachePath(project.rootPath), log.output, 'utf-8')
-    }
+      if (
+        result.exitCode === 0 &&
+        ['apply', 'destroy', 'import', 'state-mv', 'state-rm'].includes(request.command)
+      ) {
+        invalidateTerraformDriftReports(request.profileName, request.projectId)
+      }
+      if (request.command === 'state-pull' && result.exitCode === 0 && log.output.trim()) {
+        fs.writeFileSync(stateCachePath(project.rootPath), log.output, 'utf-8')
+      }
 
     const refreshedProject = getProject(request.profileName, request.projectId, request.connection)
     emit(window, { type: 'completed', projectId: request.projectId, log, project: refreshedProject })
