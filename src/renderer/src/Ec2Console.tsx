@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import './ec2.css'
 import { SvcState } from './SvcState'
+import { FreshnessIndicator, useFreshnessState } from './freshness'
 
 import type {
   AwsConnection,
@@ -325,6 +326,7 @@ async function waitForBastionRemoval(
 
 export function Ec2Console({
   connection,
+  refreshNonce = 0,
   focusInstance,
   onNavigateCloudWatch,
   onNavigateVpc,
@@ -332,6 +334,7 @@ export function Ec2Console({
   onRunTerminalCommand
 }: {
   connection: AwsConnection
+  refreshNonce?: number
   focusInstance?: { token: number; instanceId?: string; volumeId?: string; tab?: 'instances' | 'volumes' | 'snapshots' } | null
   onNavigateCloudWatch?: (instanceId: string) => void
   onNavigateVpc?: (vpcId: string) => void
@@ -450,6 +453,18 @@ export function Ec2Console({
   /* ── Recommendations state ──────────────────────────────── */
   const [recommendations, setRecommendations] = useState<Ec2Recommendation[]>([])
   const [recsLoading, setRecsLoading] = useState(false)
+  const {
+    freshness: inventoryFreshness,
+    beginRefresh: beginInventoryRefresh,
+    completeRefresh: completeInventoryRefresh,
+    failRefresh: failInventoryRefresh
+  } = useFreshnessState({ staleAfterMs: 5 * 60 * 1000 })
+  const {
+    freshness: sessionFreshness,
+    beginRefresh: beginSessionRefresh,
+    completeRefresh: completeSessionRefresh,
+    failRefresh: failSessionRefresh
+  } = useFreshnessState({ staleAfterMs: 2 * 60 * 1000 })
 
   const recommendationMap = new Map<string, Ec2Recommendation>()
   for (const rec of recommendations) {
@@ -468,7 +483,8 @@ export function Ec2Console({
   }
 
   /* ── Data loading ────────────────────────────────────────── */
-  async function reload() {
+  async function reload(reason: 'initial' | 'manual' | 'background' = 'manual') {
+    beginInventoryRefresh(reason)
     setLoading(true)
     setMsg('')
     try {
@@ -484,32 +500,52 @@ export function Ec2Console({
       setSnapshots(snaps)
       setBastions(bast)
       setSsmManagedInstances(managed)
-      if (!selectedId || !inst.some((i) => i.instanceId === selectedId)) {
-        const first = inst[0]?.instanceId ?? ''
-        setSelectedId(first)
-        if (first) await selectInstance(first)
-        else { setDetail(null); setIamAssoc(null); setVpcDetail(null); setSsmTarget(null); setSsmSessions([]) }
+      const resolvedInstanceId = selectedId && inst.some((i) => i.instanceId === selectedId)
+        ? selectedId
+        : (inst[0]?.instanceId ?? '')
+      setSelectedId(resolvedInstanceId)
+      if (resolvedInstanceId) {
+        await selectInstance(resolvedInstanceId, { preserveExisting: true, reason: 'background' })
+      } else {
+        setDetail(null)
+        setIamAssoc(null)
+        setVpcDetail(null)
+        setSsmTarget(null)
+        setSsmSessions([])
       }
-      if (!selectedSnapId || !snaps.some((s) => s.snapshotId === selectedSnapId)) {
-        setSelectedSnapId(snaps[0]?.snapshotId ?? '')
+
+      const resolvedSnapshotId = selectedSnapId && snaps.some((s) => s.snapshotId === selectedSnapId)
+        ? selectedSnapId
+        : (snaps[0]?.snapshotId ?? '')
+      setSelectedSnapId(resolvedSnapshotId)
+
+      const resolvedVolumeId = selectedVolumeId && vols.some((v) => v.volumeId === selectedVolumeId)
+        ? selectedVolumeId
+        : (vols[0]?.volumeId ?? '')
+      setSelectedVolumeId(resolvedVolumeId)
+      if (resolvedVolumeId) {
+        await selectVolume(resolvedVolumeId, { preserveExisting: true })
+      } else {
+        setVolumeDetail(null)
       }
-      if (!selectedVolumeId || !vols.some((v) => v.volumeId === selectedVolumeId)) {
-        const firstVolumeId = vols[0]?.volumeId ?? ''
-        setSelectedVolumeId(firstVolumeId)
-        if (firstVolumeId) {
-          await selectVolume(firstVolumeId)
-        } else {
-          setVolumeDetail(null)
-        }
-      }
+      completeInventoryRefresh()
     } catch (e) {
+      failInventoryRefresh()
       setMsg(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
   }
 
-useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessionId, connection.region])
+  useEffect(() => { void reload('initial'); void loadRecommendations() }, [connection.sessionId, connection.region])
+
+  useEffect(() => {
+    if (refreshNonce === 0) {
+      return
+    }
+
+    void reload('manual')
+  }, [refreshNonce])
 
   /* ── Focus drilldown ─────────────────────────────────────── */
   const [appliedFocusToken, setAppliedFocusToken] = useState(0)
@@ -543,12 +579,13 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
     }))
   }), [volumeDetail?.name])
 
-  async function loadSsmForInstance(instanceId: string): Promise<void> {
+  async function loadSsmForInstance(instanceId: string, reason: 'selection' | 'background' | 'manual' = 'selection'): Promise<void> {
     if (!instanceId) {
       setSsmTarget(null)
       setSsmSessions([])
       return
     }
+    beginSessionRefresh(reason)
     setSsmLoading(true)
     try {
       const [target, sessions] = await Promise.all([
@@ -558,7 +595,9 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
       setSsmTarget(target)
       setSsmSessions(sessions)
       setSsmCommandDocument(isWindowsPlatform(target.managedInstance?.platformName ?? detail?.platform ?? '') ? 'AWS-RunPowerShellScript' : 'AWS-RunShellScript')
+      completeSessionRefresh()
     } catch (error) {
+      failSessionRefresh()
       setSsmTarget(null)
       setSsmSessions([])
       setMsg(error instanceof Error ? error.message : String(error))
@@ -567,12 +606,14 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
     }
   }
 
-  async function selectInstance(id: string) {
+  async function selectInstance(id: string, options?: { preserveExisting?: boolean; reason?: 'selection' | 'background' | 'manual' }) {
     setSelectedId(id)
     setMsg('')
-    setDetail(null)
-    setIamAssoc(null)
-    setVpcDetail(null)
+    if (!options?.preserveExisting) {
+      setDetail(null)
+      setIamAssoc(null)
+      setVpcDetail(null)
+    }
     setLinkedBastions([])
     setSsmTarget(null)
     setSsmSessions([])
@@ -585,7 +626,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
         try { setVpcDetail(await describeVpc(connection, d.vpcId)) } catch { setVpcDetail(null) }
       }
       try { setLinkedBastions(await findBastionConnectionsForInstance(connection, id)) } catch { setLinkedBastions([]) }
-      await loadSsmForInstance(id)
+      await loadSsmForInstance(id, options?.reason ?? 'selection')
     } else {
       setLinkedBastions([])
       setSsmTarget(null)
@@ -593,9 +634,11 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
     }
   }
 
-  async function selectVolume(id: string) {
+  async function selectVolume(id: string, options?: { preserveExisting?: boolean }) {
     setSelectedVolumeId(id)
-    setVolumeDetail(null)
+    if (!options?.preserveExisting) {
+      setVolumeDetail(null)
+    }
     setMsg('')
     const detail = await describeEbsVolume(connection, id)
     setVolumeDetail(detail)
@@ -1121,8 +1164,13 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
           type="button"
           onClick={() => setMainTab('snapshots')}
         >Snapshots</button>
-        <button className="ec2-tab" type="button" onClick={() => void reload()} style={{ marginLeft: 'auto' }}>Refresh</button>
+        <button className="ec2-tab" type="button" onClick={() => void reload('manual')} style={{ marginLeft: 'auto' }}>Refresh</button>
       </div>
+
+      <FreshnessIndicator freshness={inventoryFreshness} label="Inventory last updated" />
+      {(mainTab === 'instances' || volumeWorkflowBusy || bastionLaunchBusy) && (
+        <FreshnessIndicator freshness={sessionFreshness} label="Session-sensitive detail last updated" staleLabel="Refresh detail" />
+      )}
 
       {msg && <div className="ec2-msg">{msg}</div>}
 

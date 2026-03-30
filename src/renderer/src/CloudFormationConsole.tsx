@@ -23,6 +23,7 @@ import {
   startCloudFormationDriftDetection
 } from './api'
 import { ConfirmButton } from './ConfirmButton'
+import { FreshnessIndicator, useFreshnessState } from './freshness'
 
 type CfnTab = 'stacks' | 'diagram'
 type StackColKey = 'stackName' | 'status' | 'creationTime'
@@ -496,7 +497,13 @@ function RawJsonBlock({ title, json }: { title: string; json: string }) {
   )
 }
 
-export function CloudFormationConsole({ connection }: { connection: AwsConnection }) {
+export function CloudFormationConsole({
+  connection,
+  refreshNonce = 0
+}: {
+  connection: AwsConnection
+  refreshNonce?: number
+}) {
   const [tab, setTab] = useState<CfnTab>('stacks')
   const [detailTab, setDetailTab] = useState<StackDetailTab>('resources')
   const [stacks, setStacks] = useState<CloudFormationStackSummary[]>([])
@@ -523,6 +530,18 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
   const [templateUrl, setTemplateUrl] = useState('')
   const [parametersJson, setParametersJson] = useState('')
   const [capabilitiesInput, setCapabilitiesInput] = useState('CAPABILITY_NAMED_IAM')
+  const {
+    freshness: stackFreshness,
+    beginRefresh: beginStackRefresh,
+    completeRefresh: completeStackRefresh,
+    failRefresh: failStackRefresh
+  } = useFreshnessState({ staleAfterMs: 5 * 60 * 1000 })
+  const {
+    freshness: driftFreshness,
+    beginRefresh: beginDriftRefresh,
+    completeRefresh: completeDriftRefresh,
+    failRefresh: failDriftRefresh
+  } = useFreshnessState({ staleAfterMs: 2 * 60 * 1000 })
 
   const loadChangeSetDetail = useCallback(async (stackName: string, nextChangeSetName: string) => {
     if (!stackName || !nextChangeSetName) {
@@ -583,7 +602,8 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
     }
   }, [connection, loadChangeSetDetail, selectedChangeSetName])
 
-  const load = useCallback(async (stackName?: string) => {
+  const load = useCallback(async (stackName?: string, reason: 'initial' | 'manual' | 'background' = 'manual') => {
+    beginStackRefresh(reason)
     setError('')
     setLoading(true)
     try {
@@ -592,16 +612,26 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
       const resolved = stackName ?? selectedStack ?? nextStacks[0]?.stackName ?? ''
       setSelectedStack(resolved)
       await loadStackDetail(resolved)
+      completeStackRefresh()
     } catch (reason) {
+      failStackRefresh()
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setLoading(false)
     }
-  }, [connection, loadStackDetail, selectedStack])
+  }, [beginStackRefresh, completeStackRefresh, connection, failStackRefresh, loadStackDetail, selectedStack])
 
   useEffect(() => {
-    void load()
+    void load(undefined, 'initial')
   }, [connection.sessionId, connection.region, load])
+
+  useEffect(() => {
+    if (refreshNonce === 0) {
+      return
+    }
+
+    void load(selectedStack, 'manual')
+  }, [load, refreshNonce, selectedStack])
 
   useEffect(() => {
     if (!driftSummary?.driftDetectionId || driftSummary.detectionStatus !== 'DETECTION_IN_PROGRESS') {
@@ -609,12 +639,15 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
     }
 
     const timer = window.setTimeout(async () => {
+      beginDriftRefresh('background')
       setDriftLoading(true)
       try {
         const result = await getCloudFormationDriftDetectionStatus(connection, selectedStack, driftSummary.driftDetectionId)
         setDriftSummary(result.summary)
         setDriftRows(result.rows)
+        completeDriftRefresh()
       } catch (reason) {
+        failDriftRefresh()
         setError(reason instanceof Error ? reason.message : String(reason))
       } finally {
         setDriftLoading(false)
@@ -622,7 +655,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
     }, 2500)
 
     return () => window.clearTimeout(timer)
-  }, [connection, driftSummary, selectedStack])
+  }, [beginDriftRefresh, completeDriftRefresh, connection, driftSummary, failDriftRefresh, selectedStack])
 
   const visStackCols = STACK_COLS.filter(c => stackCols.has(c.key))
   const visResCols = RES_COLS.filter(c => resCols.has(c.key))
@@ -684,6 +717,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
 
   async function handleRefreshDrift() {
     if (!selectedStack) return
+    beginDriftRefresh('manual')
     setDriftLoading(true)
     try {
       const summary = await getCloudFormationDriftSummary(connection, selectedStack)
@@ -695,7 +729,9 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
       } else {
         setDriftRows([])
       }
+      completeDriftRefresh()
     } catch (reason) {
+      failDriftRefresh()
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setDriftLoading(false)
@@ -704,6 +740,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
 
   async function handleStartDriftDetection() {
     if (!selectedStack) return
+    beginDriftRefresh('workflow')
     setDriftLoading(true)
     try {
       const driftDetectionId = await startCloudFormationDriftDetection(connection, selectedStack)
@@ -718,6 +755,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
       }))
       setDriftRows([])
     } catch (reason) {
+      failDriftRefresh()
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setDriftLoading(false)
@@ -729,9 +767,10 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
       <div className="svc-tab-bar">
         <button className={`svc-tab ${tab === 'stacks' ? 'active' : ''}`} type="button" onClick={() => setTab('stacks')}>Stacks</button>
         <button className={`svc-tab ${tab === 'diagram' ? 'active' : ''}`} type="button" onClick={() => setTab('diagram')}>Diagram</button>
-        <button className="svc-tab right" type="button" onClick={() => void load(selectedStack)}>Refresh</button>
+        <button className="svc-tab right" type="button" onClick={() => void load(selectedStack, 'manual')}>Refresh</button>
       </div>
 
+      <FreshnessIndicator freshness={stackFreshness} label="Stacks last updated" />
       {error && <SvcState variant="error" error={error} />}
 
       {tab === 'stacks' && (
@@ -777,6 +816,9 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                   <div className="svc-kv-row"><div className="svc-kv-label">Resources</div><div className="svc-kv-value">{resources.length}</div></div>
                   <div className="svc-kv-row"><div className="svc-kv-label">Change Sets</div><div className="svc-kv-value">{changeSets.length}</div></div>
                   <div className="svc-kv-row"><div className="svc-kv-label">Drift</div><div className="svc-kv-value"><span className={`svc-badge ${badgeClass(driftSummary?.stackDriftStatus ?? 'NOT_CHECKED')}`}>{driftSummary?.stackDriftStatus ?? 'NOT_CHECKED'}</span></div></div>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <FreshnessIndicator freshness={driftFreshness} label="Drift last checked" staleLabel="Recheck drift" />
                 </div>
                 {detailLoading && <SvcState variant="loading" message="Refreshing stack detail…" compact />}
               </div>

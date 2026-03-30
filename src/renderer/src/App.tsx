@@ -123,6 +123,17 @@ const IMPLEMENTED_SCREENS = new Set<ServiceId>([
   'waf'
 ])
 
+const SOFT_REFRESH_SCREENS = new Set<Screen>([
+  'overview',
+  'compare',
+  'compliance-center',
+  'terraform',
+  'ec2',
+  'cloudformation',
+  'ecs',
+  'load-balancers'
+])
+
 function ConnectedServiceScreen({
   service,
   state,
@@ -410,6 +421,7 @@ export function App() {
   const activeCacheTag = screenCacheTag(screen)
   const activePageNonce = pageRefreshNonceByScreen[screen] ?? 0
   const isCurrentScreenRefreshing = refreshState?.screen === screen
+  const prefersSoftRefresh = SOFT_REFRESH_SCREENS.has(screen)
   const showCatalogFab = screen === 'profiles'
   const connectionScopeKey = connectionState.connection
     ? `${connectionState.connection.sessionId}:${connectionState.connection.region}`
@@ -686,7 +698,14 @@ export function App() {
     if (targetScreen === 'terraform' && targetService?.id === 'terraform') {
       return (
         <ConnectedServiceScreen service={targetService} state={connectionState}>
-          {(connection) => <TerraformConsole connection={connection} onRunTerminalCommand={handleOpenTerminalCommand} onNavigateService={navigateToServiceWithResourceId} />}
+          {(connection) => (
+            <TerraformConsole
+              connection={connection}
+              refreshNonce={pageRefreshNonceByScreen['terraform'] ?? 0}
+              onRunTerminalCommand={handleOpenTerminalCommand}
+              onNavigateService={navigateToServiceWithResourceId}
+            />
+          )}
         </ConnectedServiceScreen>
       )
     }
@@ -697,6 +716,7 @@ export function App() {
           {(connection) => (
             <Ec2Console
               connection={connection}
+              refreshNonce={pageRefreshNonceByScreen['ec2'] ?? 0}
               focusInstance={getFocus('ec2')}
               onNavigateCloudWatch={(instanceId) => navigateWithFocus({ service: 'cloudwatch', ec2InstanceId: instanceId })}
               onNavigateVpc={(vpcId) => navigateWithFocus({ service: 'vpc', vpcId })}
@@ -738,6 +758,7 @@ export function App() {
         <CompareWorkspace
           connectionState={connectionState}
           seed={compareSeed}
+          refreshNonce={pageRefreshNonceByScreen['compare'] ?? 0}
           onNavigate={navigateToServiceWithResourceId}
         />
       )
@@ -805,13 +826,13 @@ export function App() {
     if (targetScreen === 'security-groups' && targetService?.id === 'security-groups') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <SecurityGroupsConsole connection={connection} focusSecurityGroupId={getFocus('security-groups')} />}</ConnectedServiceScreen>
     if (targetScreen === 'cloudwatch' && targetService?.id === 'cloudwatch') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudWatchConsole connection={connection} focusEc2Instance={getFocus('cloudwatch')} />}</ConnectedServiceScreen>
     if (targetScreen === 'cloudtrail' && targetService?.id === 'cloudtrail') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudTrailConsole connection={connection} />}</ConnectedServiceScreen>
-    if (targetScreen === 'cloudformation' && targetService?.id === 'cloudformation') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudFormationConsole connection={connection} />}</ConnectedServiceScreen>
+    if (targetScreen === 'cloudformation' && targetService?.id === 'cloudformation') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudFormationConsole connection={connection} refreshNonce={pageRefreshNonceByScreen['cloudformation'] ?? 0} />}</ConnectedServiceScreen>
     if (targetScreen === 'route53' && targetService?.id === 'route53') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <Route53Console connection={connection} focusRecord={getFocus('route53')} />}</ConnectedServiceScreen>
     if (targetScreen === 's3' && targetService?.id === 's3') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <S3Console connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'rds' && targetService?.id === 'rds') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <RdsConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'lambda' && targetService?.id === 'lambda') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <LambdaConsole connection={connection} focusFunctionName={getFocus('lambda')} />}</ConnectedServiceScreen>
     if (targetScreen === 'auto-scaling' && targetService?.id === 'auto-scaling') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <AutoScalingConsole connection={connection} />}</ConnectedServiceScreen>
-    if (targetScreen === 'ecs' && targetService?.id === 'ecs') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcsConsole connection={connection} focusService={getFocus('ecs')} onRunTerminalCommand={handleOpenTerminalCommand} />}</ConnectedServiceScreen>
+    if (targetScreen === 'ecs' && targetService?.id === 'ecs') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcsConsole connection={connection} refreshNonce={pageRefreshNonceByScreen['ecs'] ?? 0} focusService={getFocus('ecs')} onRunTerminalCommand={handleOpenTerminalCommand} />}</ConnectedServiceScreen>
     if (targetScreen === 'acm' && targetService?.id === 'acm') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <AcmConsole connection={connection} onOpenRoute53={(record) => navigateWithFocus({ service: 'route53', record })} onOpenLoadBalancer={(loadBalancerArn) => navigateWithFocus({ service: 'load-balancers', loadBalancerArn })} onOpenWaf={(webAclName) => navigateWithFocus({ service: 'waf', webAclName })} />}</ConnectedServiceScreen>
     if (targetScreen === 'ecr' && targetService?.id === 'ecr') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcrConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'eks' && targetService?.id === 'eks') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EksConsole connection={connection} focusClusterName={getFocus('eks')} onRunTerminalCommand={handleOpenTerminalCommand} />}</ConnectedServiceScreen>
@@ -826,7 +847,7 @@ export function App() {
     if (targetScreen === 'sts' && targetService?.id === 'sts') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <StsConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'kms' && targetService?.id === 'kms') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <KmsConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'waf' && targetService?.id === 'waf') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <WafConsole connection={connection} focusWebAcl={getFocus('waf')} />}</ConnectedServiceScreen>
-    if (targetScreen === 'load-balancers' && targetService?.id === 'load-balancers') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <WorkspaceApp connection={connection} focusLoadBalancer={getFocus('load-balancers')} />}</ConnectedServiceScreen>
+    if (targetScreen === 'load-balancers' && targetService?.id === 'load-balancers') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <WorkspaceApp connection={connection} refreshNonce={pageRefreshNonceByScreen['load-balancers'] ?? 0} focusLoadBalancer={getFocus('load-balancers')} />}</ConnectedServiceScreen>
     if (targetScreen === 'sns' && targetService?.id === 'sns') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <SnsConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'sqs' && targetService?.id === 'sqs') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <SqsConsole connection={connection} />}</ConnectedServiceScreen>
 
@@ -911,8 +932,17 @@ export function App() {
               onClick={handlePageRefresh}
               disabled={!activeCacheTag || !connectionState.connection || !connectionState.connected || isCurrentScreenRefreshing}
             >
-              {isCurrentScreenRefreshing ? 'Refreshing...' : 'Refresh current page'}
+              {isCurrentScreenRefreshing
+                ? 'Refreshing current view...'
+                : selectedService
+                  ? `Refresh ${selectedService.label}`
+                  : 'Refresh current page'}
             </button>
+            {connectionState.connected && activeCacheTag && (
+              <span className="sidebar-refresh-hint">
+                {prefersSoftRefresh ? 'Refresh keeps your current selection and filters.' : 'Refresh may rebuild the current view.'}
+              </span>
+            )}
           </div>
 
           <div className={`service-nav-scroll ${!connectionState.connected ? 'nav-disabled' : ''}`}>
@@ -972,20 +1002,27 @@ export function App() {
       <main className="catalog-main">
         {(catalogError || connectionState.error) && <div className="error-banner">{catalogError || connectionState.error}</div>}
         {profileActionMsg && <div className="success-banner">{profileActionMsg}</div>}
-        {visitedScreens.map((visitedScreen) => (
-          <section
-            key={`${connectionRenderEpoch}:${visitedScreen}:${pageRefreshNonceByScreen[visitedScreen] ?? 0}`}
-            className={`catalog-main-content ${visitedScreen === screen ? 'active' : 'hidden'} ${refreshState?.screen === visitedScreen ? 'refreshing' : ''}`}
-            aria-hidden={visitedScreen === screen ? undefined : true}
-          >
-            {renderScreenContent(visitedScreen)}
-            {refreshState?.screen === visitedScreen && (
-              <div className="page-refresh-overlay" role="status" aria-live="polite">
-                <div className="page-refresh-overlay__label">Gathering data</div>
-              </div>
-            )}
-          </section>
-        ))}
+        {visitedScreens.map((visitedScreen) => {
+          const shouldSoftRefresh = SOFT_REFRESH_SCREENS.has(visitedScreen)
+          const sectionKey = shouldSoftRefresh
+            ? `${connectionRenderEpoch}:${visitedScreen}`
+            : `${connectionRenderEpoch}:${visitedScreen}:${pageRefreshNonceByScreen[visitedScreen] ?? 0}`
+
+          return (
+            <section
+              key={sectionKey}
+              className={`catalog-main-content ${visitedScreen === screen ? 'active' : 'hidden'} ${refreshState?.screen === visitedScreen ? 'refreshing' : ''}`}
+              aria-hidden={visitedScreen === screen ? undefined : true}
+            >
+              {renderScreenContent(visitedScreen)}
+              {refreshState?.screen === visitedScreen && !shouldSoftRefresh && (
+                <div className="page-refresh-overlay" role="status" aria-live="polite">
+                  <div className="page-refresh-overlay__label">Gathering data</div>
+                </div>
+              )}
+            </section>
+          )
+        })}
         {false && (
         <div key={`${screen}:${activePageNonce}`} className="catalog-main-content">
         {(catalogError || connectionState.error) && <div className="error-banner">{catalogError || connectionState.error}</div>}

@@ -25,6 +25,7 @@ import {
 } from './api'
 import { ConfirmButton } from './ConfirmButton'
 import { ObservabilityResilienceLab } from './ObservabilityResilienceLab'
+import { FreshnessIndicator, useFreshnessState } from './freshness'
 
 type MainTab = 'services' | 'tasks' | 'lab'
 type ServiceColumnKey = 'serviceName' | 'status' | 'running' | 'launchType' | 'taskDefinition' | 'deploymentStatus'
@@ -94,10 +95,12 @@ function KV({ items }: { items: Array<[string, string]> }) {
 
 export function EcsConsole({
   connection,
+  refreshNonce = 0,
   focusService,
   onRunTerminalCommand
 }: {
   connection: AwsConnection
+  refreshNonce?: number
   focusService?: { token: number; clusterArn: string; serviceName: string } | null
   onRunTerminalCommand?: (command: string) => void
 }) {
@@ -127,6 +130,18 @@ export function EcsConsole({
   const [labReport, setLabReport] = useState<ObservabilityPostureReport | null>(null)
   const [labLoading, setLabLoading] = useState(false)
   const [labError, setLabError] = useState('')
+  const {
+    freshness: diagnosticsFreshness,
+    beginRefresh: beginDiagnosticsRefresh,
+    completeRefresh: completeDiagnosticsRefresh,
+    failRefresh: failDiagnosticsRefresh
+  } = useFreshnessState({ staleAfterMs: 2 * 60 * 1000 })
+  const {
+    freshness: labFreshness,
+    beginRefresh: beginLabRefresh,
+    completeRefresh: completeLabRefresh,
+    failRefresh: failLabRefresh
+  } = useFreshnessState({ staleAfterMs: 5 * 60 * 1000 })
 
   const selectedCluster = useMemo(
     () => clusters.find((cluster) => cluster.clusterArn === selectedClusterArn) ?? null,
@@ -170,7 +185,12 @@ export function EcsConsole({
     return diagnostics.logTargets.find((target) => `${target.taskArn}:${target.containerName}` === selectedLogTargetKey) ?? fallback
   }, [diagnostics, selectedLogTargetKey, selectedTask])
 
-  async function load(clusterArn?: string, serviceName?: string) {
+  async function load(
+    clusterArn?: string,
+    serviceName?: string,
+    reason: 'initial' | 'manual' | 'background' | 'selection' = 'manual'
+  ) {
+    beginDiagnosticsRefresh(reason)
     setLoading(true)
     setError('')
     try {
@@ -207,14 +227,19 @@ export function EcsConsole({
       setLabReport(null)
       setLabError('')
       setDesiredCount(String(nextDiagnostics.service.desiredCount))
-      const nextSelectedTaskArn = nextDiagnostics.taskRows[0]?.taskArn ?? ''
+      const nextSelectedTaskArn = nextDiagnostics.taskRows.some((task) => task.taskArn === selectedTaskArn)
+        ? selectedTaskArn
+        : (nextDiagnostics.taskRows[0]?.taskArn ?? '')
       setSelectedTaskArn(nextSelectedTaskArn)
-      const nextLogTarget = nextDiagnostics.logTargets.find((target) => target.taskArn === nextSelectedTaskArn && target.available) ??
+      const nextLogTarget = nextDiagnostics.logTargets.find((target) => `${target.taskArn}:${target.containerName}` === selectedLogTargetKey && target.available) ??
+        nextDiagnostics.logTargets.find((target) => target.taskArn === nextSelectedTaskArn && target.available) ??
         nextDiagnostics.logTargets.find((target) => target.available)
       setSelectedLogTargetKey(nextLogTarget ? `${nextLogTarget.taskArn}:${nextLogTarget.containerName}` : '')
       setLogs([])
       setLogStatus('')
+      completeDiagnosticsRefresh()
     } catch (e) {
+      failDiagnosticsRefresh()
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
@@ -222,8 +247,16 @@ export function EcsConsole({
   }
 
   useEffect(() => {
-    void load()
+    void load(undefined, undefined, 'initial')
   }, [connection.sessionId, connection.region])
+
+  useEffect(() => {
+    if (refreshNonce === 0) {
+      return
+    }
+
+    void load(selectedClusterArn, selectedServiceName, 'manual')
+  }, [refreshNonce, selectedClusterArn, selectedServiceName])
 
   useEffect(() => {
     if (!focusService || focusService.token === appliedFocusToken) return
@@ -273,12 +306,15 @@ export function EcsConsole({
 
   async function loadLab() {
     if (!selectedClusterTarget || !selectedServiceName) return
+    beginLabRefresh('background')
     setLabLoading(true)
     setLabError('')
     try {
       const report = await getEcsObservabilityReport(connection, selectedClusterTarget, selectedServiceName)
       setLabReport(report)
+      completeLabRefresh()
     } catch (e) {
+      failLabRefresh()
       setLabError(e instanceof Error ? e.message : 'Failed to load observability lab')
     } finally {
       setLabLoading(false)
@@ -293,6 +329,7 @@ export function EcsConsole({
 
   async function selectService(serviceName: string) {
     setSelectedServiceName(serviceName)
+    beginDiagnosticsRefresh('selection')
     setMsg('')
     setError('')
     setLogs([])
@@ -301,12 +338,17 @@ export function EcsConsole({
       const nextDiagnostics = await getEcsDiagnostics(connection, selectedClusterTarget, serviceName)
       setDiagnostics(nextDiagnostics)
       setDesiredCount(String(nextDiagnostics.service.desiredCount))
-      const nextSelectedTaskArn = nextDiagnostics.taskRows[0]?.taskArn ?? ''
+      const nextSelectedTaskArn = nextDiagnostics.taskRows.some((task) => task.taskArn === selectedTaskArn)
+        ? selectedTaskArn
+        : (nextDiagnostics.taskRows[0]?.taskArn ?? '')
       setSelectedTaskArn(nextSelectedTaskArn)
-      const nextLogTarget = nextDiagnostics.logTargets.find((target) => target.taskArn === nextSelectedTaskArn && target.available) ??
+      const nextLogTarget = nextDiagnostics.logTargets.find((target) => `${target.taskArn}:${target.containerName}` === selectedLogTargetKey && target.available) ??
+        nextDiagnostics.logTargets.find((target) => target.taskArn === nextSelectedTaskArn && target.available) ??
         nextDiagnostics.logTargets.find((target) => target.available)
       setSelectedLogTargetKey(nextLogTarget ? `${nextLogTarget.taskArn}:${nextLogTarget.containerName}` : '')
+      completeDiagnosticsRefresh()
     } catch (e) {
+      failDiagnosticsRefresh()
       setError(e instanceof Error ? e.message : String(e))
     }
   }
@@ -403,9 +445,14 @@ export function EcsConsole({
         <button className={`ecs-tab ${mainTab === 'services' ? 'active' : ''}`} type="button" onClick={() => setMainTab('services')}>Services</button>
         <button className={`ecs-tab ${mainTab === 'tasks' ? 'active' : ''}`} type="button" onClick={() => setMainTab('tasks')}>Tasks ({taskRows.length})</button>
         <button className={`ecs-tab ${mainTab === 'lab' ? 'active' : ''}`} type="button" onClick={() => setMainTab('lab')}>Resilience Lab</button>
-        <button className="ecs-tab" type="button" onClick={() => void load(selectedClusterArn, selectedServiceName)} style={{ marginLeft: 'auto' }}>Refresh</button>
+        <button className="ecs-tab" type="button" onClick={() => void load(selectedClusterArn, selectedServiceName, 'manual')} style={{ marginLeft: 'auto' }}>Refresh</button>
       </div>
 
+      <FreshnessIndicator
+        freshness={mainTab === 'lab' ? labFreshness : diagnosticsFreshness}
+        label={mainTab === 'lab' ? 'Lab last updated' : 'Diagnostics last updated'}
+        staleLabel={mainTab === 'lab' ? 'Refresh lab' : 'Refresh diagnostics'}
+      />
       {error && <SvcState variant="error" error={error} />}
       {msg && <div className="ecs-msg">{msg}</div>}
 

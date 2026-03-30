@@ -60,10 +60,12 @@ function defaultRightKey(leftKey: string, options: SelectorOption[]): string {
 export function CompareWorkspace({
   connectionState,
   seed,
+  refreshNonce = 0,
   onNavigate
 }: {
   connectionState: ReturnType<typeof useAwsPageConnection>
   seed: CompareSeed | null
+  refreshNonce?: number
   onNavigate: (serviceId: ServiceId, resourceId?: string, region?: string) => void
 }) {
   const options = useMemo<SelectorOption[]>(() => {
@@ -185,7 +187,10 @@ export function CompareWorkspace({
     try {
       const next = await runComparison(request)
       setResult(next)
-      setSelectedRowId(next.groups[0]?.rows[0]?.id ?? '')
+      setSelectedRowId((current) => {
+        const rows = next.groups.flatMap((group) => group.rows)
+        return rows.some((row) => row.id === current) ? current : (rows[0]?.id ?? '')
+      })
     } catch (compareError) {
       setResult(null)
       setSelectedRowId('')
@@ -194,6 +199,15 @@ export function CompareWorkspace({
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (refreshNonce === 0 || !result) {
+      return
+    }
+
+    void handleCompare()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshNonce])
 
   function renderRow(row: ComparisonDiffRow) {
     return (

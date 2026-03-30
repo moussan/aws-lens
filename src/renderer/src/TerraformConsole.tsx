@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './terraform.css'
 import { SvcState } from './SvcState'
+import { FreshnessIndicator, useFreshnessState } from './freshness'
 
 import type {
   AwsConnection,
@@ -2624,8 +2625,9 @@ function HistoryTab({ projectId }: { projectId: string }) {
   )
 }
 
-export function TerraformConsole({ connection, onRunTerminalCommand, onNavigateService }: {
+export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCommand, onNavigateService }: {
   connection: AwsConnection
+  refreshNonce?: number
   onRunTerminalCommand?: (command: string) => void
   onNavigateService?: (serviceId: ServiceId, resourceId?: string) => void
 }) {
@@ -2674,6 +2676,18 @@ export function TerraformConsole({ connection, onRunTerminalCommand, onNavigateS
   const [progressLine, setProgressLine] = useState('')
   const [showProgress, setShowProgress] = useState(false)
   const [progressItems, setProgressItems] = useState<Map<string, { status: string; done: boolean }>>(new Map())
+  const {
+    freshness: workspaceFreshness,
+    beginRefresh: beginWorkspaceRefresh,
+    completeRefresh: completeWorkspaceRefresh,
+    failRefresh: failWorkspaceRefresh
+  } = useFreshnessState({ staleAfterMs: 5 * 60 * 1000 })
+  const {
+    freshness: driftFreshness,
+    beginRefresh: beginDriftRefresh,
+    completeRefresh: completeDriftRefresh,
+    failRefresh: failDriftRefresh
+  } = useFreshnessState({ staleAfterMs: 2 * 60 * 1000 })
 
   const cliOk = cliInfo?.found === true
   const contextKey = terraformContextKey(connection)
@@ -2700,18 +2714,30 @@ export function TerraformConsole({ connection, onRunTerminalCommand, onNavigateS
 
   // Load projects
   const reload = useCallback(async () => {
+    beginWorkspaceRefresh('manual')
     setLoading(true)
     try {
       const list = await listProjects(contextKey, connection)
       setProjectsList(list)
+      completeWorkspaceRefresh()
     } catch (err) {
+      failWorkspaceRefresh()
       setMsg(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
-  }, [connection, contextKey])
+  }, [beginWorkspaceRefresh, completeWorkspaceRefresh, connection, contextKey, failWorkspaceRefresh])
 
   useEffect(() => { void reload() }, [reload])
+
+  useEffect(() => {
+    if (refreshNonce === 0) {
+      return
+    }
+
+    void handleReload()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshNonce])
 
   // Load detail when selected
   useEffect(() => {
@@ -2729,18 +2755,21 @@ export function TerraformConsole({ connection, onRunTerminalCommand, onNavigateS
 
   const loadDrift = useCallback(async (options?: { forceRefresh?: boolean }) => {
     if (!detail) return
+    beginDriftRefresh(options?.forceRefresh ? 'manual' : 'background')
     setDriftLoading(true)
     setDriftError('')
     try {
       const report = await getDrift(contextKey, detail.id, projectConnection, options)
       setDriftReport(report)
       setSelectedDriftKey((current) => current || (report.items[0] ? driftItemKey(report.items[0]) : ''))
+      completeDriftRefresh()
     } catch (err) {
+      failDriftRefresh()
       setDriftError(err instanceof Error ? err.message : String(err))
     } finally {
       setDriftLoading(false)
     }
-  }, [contextKey, detail, projectConnection])
+  }, [beginDriftRefresh, completeDriftRefresh, contextKey, detail, failDriftRefresh, projectConnection])
 
   const detailTabRef = useRef(detailTab)
   const loadDriftRef = useRef(loadDrift)
@@ -3276,6 +3305,9 @@ export function TerraformConsole({ connection, onRunTerminalCommand, onNavigateS
         <button className="tf-toolbar-btn" onClick={handleReload} disabled={loading}>Reload</button>
         <button className="tf-toolbar-btn" onClick={handleShowInputs} disabled={!detail}>Inputs</button>
       </div>
+
+      <FreshnessIndicator freshness={workspaceFreshness} label="Workspace inventory last updated" />
+      {detailTab === 'drift' && <FreshnessIndicator freshness={driftFreshness} label="Drift last updated" staleLabel="Re-scan drift" />}
 
       {msg && <div className={`tf-msg ${msg.toLowerCase().includes('error') || msg.toLowerCase().includes('not found') ? 'error' : ''}`}>{msg}</div>}
 
