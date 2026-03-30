@@ -417,6 +417,24 @@ export type EbsVolumeAttachment = {
   deleteOnTermination: boolean
 }
 
+export type EbsVolumeAttachRequest = {
+  instanceId: string
+  device: string
+}
+
+export type EbsVolumeDetachRequest = {
+  instanceId?: string
+  device?: string
+  force?: boolean
+}
+
+export type EbsVolumeModifyRequest = {
+  sizeGiB?: number
+  type?: string
+  iops?: number
+  throughput?: number
+}
+
 export type EbsTempInspectionEnvironment = {
   tempUuid: string
   purpose: string
