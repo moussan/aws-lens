@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './s3.css'
+import { SvcState } from './SvcState'
 
 import type {
   AwsConnection,
@@ -510,12 +511,12 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
   const activeObjCols = OBJ_COLUMNS.filter((column) => visibleObjCols.has(column.key))
 
   if (loading && buckets.length === 0) {
-    return <div className="s3-empty">Loading S3 data...</div>
+    return <SvcState variant="loading" resourceName="S3" />
   }
 
   return (
     <div className="s3-console">
-      {error && <div className="s3-msg s3-msg-error">{error}<button type="button" className="s3-msg-close" onClick={() => setError('')}>x</button></div>}
+      {error && <SvcState variant="error" error={error} onDismiss={() => setError('')} />}
       {msg && <div className="s3-msg s3-msg-ok">{msg}<button type="button" className="s3-msg-close" onClick={() => setMsg('')}>x</button></div>}
       <div className="s3-layout">
         <div className="s3-bucket-panel">
@@ -626,7 +627,7 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
               </div>
               <div className="s3-summary-detail-list">
                 {summaryFilterBuckets.length === 0 ? (
-                  <div className="s3-empty">No buckets match this summary card.</div>
+                  <SvcState variant="no-filter-matches" resourceName="buckets" compact />
                 ) : summaryFilterBuckets.map((entry) => (
                   <button
                     key={`${selectedSummaryFilter}-${entry.bucketName}`}
@@ -722,7 +723,7 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
                         {activeObjCols.map((column) => <td key={column.key}>{column.key === 'name' && obj.isFolder && <span className="s3-folder-icon">&#128193; </span>}{getObjectColValue(obj, column.key, prefix)}</td>)}
                       </tr>
                     ))}
-                    {filteredObjects.length === 0 && <tr><td colSpan={activeObjCols.length} className="s3-empty">{objects.length === 0 ? 'Empty folder.' : 'No objects match the current filters.'}</td></tr>}
+                    {filteredObjects.length === 0 && <tr><td colSpan={activeObjCols.length}>{objects.length === 0 ? <SvcState variant="empty" message="Empty folder." compact /> : <SvcState variant="no-filter-matches" resourceName="objects" compact />}</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -759,7 +760,7 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
                     {previewUrl && previewContentType === 'image' && <img src={previewUrl} alt={selectedKey} className="s3-preview-image" />}
                     {!previewUrl && !editing && previewContent && <pre className="s3-preview-text">{previewContent}</pre>}
                     {editing && <textarea className="s3-edit-area" value={editContent} onChange={(e) => setEditContent(e.target.value)} />}
-                    {!previewUrl && !previewContent && !editing && <div className="s3-empty">Loading preview...</div>}
+                    {!previewUrl && !previewContent && !editing && <SvcState variant="loading" resourceName="preview" compact />}
                   </div>
                 </div>
               )}
@@ -811,7 +812,7 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
             </>
           ) : (
             <div className="s3-governance-panel">
-              {detailLoading && <div className="s3-empty">Loading governance posture...</div>}
+              {detailLoading && <SvcState variant="loading" resourceName="governance posture" compact />}
               {!detailLoading && selectedBucket && governanceDetail && (
                 <>
                   <div className="s3-governance-header">
@@ -859,7 +860,7 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
 
                   <div className="s3-findings-panel">
                     <div className="s3-findings-header"><h4>Bucket Findings</h4><span>{governanceDetail.posture.findings.length} findings</span></div>
-                    {governanceDetail.posture.findings.length === 0 ? <div className="s3-empty">No governance findings for this bucket.</div> : governanceDetail.posture.findings.map((finding) => (
+                    {governanceDetail.posture.findings.length === 0 ? <SvcState variant="empty" message="No governance findings for this bucket." compact /> : governanceDetail.posture.findings.map((finding) => (
                       <div key={finding.id} className={`s3-finding-card ${severityClass(finding.severity)}`}>
                         <div className="s3-finding-head"><strong>{finding.title}</strong><span className={`s3-badge ${severityClass(finding.severity)}`}>{formatSeverity(finding.severity)}</span></div>
                         <p>{finding.summary}</p>

@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './terraform.css'
+import { SvcState } from './SvcState'
 
 import type {
   AwsConnection,
@@ -1120,7 +1121,7 @@ function DiagramView({ diagram }: { diagram: TerraformDiagram }) {
   }, [hoveredNode, diagram.edges])
 
   if (diagram.nodes.length === 0) {
-    return <div className="tf-diagram-container"><div className="tf-diagram-empty">No resources to display. Run Plan or load state to build the diagram.</div></div>
+    return <div className="tf-diagram-container"><SvcState variant="empty" message="No resources to display. Run Plan or load state to build the diagram." /></div>
   }
 
   const scale = zoom / 100
@@ -1667,7 +1668,7 @@ function ActionsTab({
             </div>
           </>
         ) : (
-          <div className="tf-empty" style={{ padding: 0 }}>No actionable changes in the saved plan.</div>
+          <SvcState variant="empty" message="No actionable changes in the saved plan." compact />
         )}
         <div className="tf-section-hint">
           JSON fields used: {s.jsonFieldsUsed.join(', ')}
@@ -1989,7 +1990,7 @@ function StateTab({
       <div className="tf-section">
         <h3>Recent Backups</h3>
         {project.stateBackups.length === 0 ? (
-          <div className="tf-empty">No state backups captured yet.</div>
+          <SvcState variant="empty" message="No state backups captured yet." />
         ) : (
           <div className="tf-state-backup-list">
             {project.stateBackups.slice(0, 5).map((backup) => (
@@ -2073,7 +2074,7 @@ function ResourcesTab({ project }: { project: TerraformProject }) {
         </div>
       </div>
       {rows.length === 0 ? (
-        <div className="tf-section"><div className="tf-empty">No deployed resources found. Run Init + Apply or load state.</div></div>
+        <div className="tf-section"><SvcState variant="empty" message="No deployed resources found. Run Init + Apply or load state." /></div>
       ) : (
         <div className="tf-section">
           <div className="tf-resource-table-wrap">
@@ -2261,9 +2262,9 @@ function DriftTab({
           </label>
         </div>
       </div>
-      {error && <div className="tf-section"><div className="tf-msg error">{error}</div></div>}
+      {error && <div className="tf-section"><SvcState variant="error" error={error} /></div>}
       {!loading && !error && filteredItems.length === 0 && (
-        <div className="tf-section"><div className="tf-empty">No drift items matched the current filters.</div></div>
+        <div className="tf-section"><SvcState variant="no-filter-matches" resourceName="drift items" /></div>
       )}
       {filteredItems.length > 0 && (
         <>
@@ -2514,9 +2515,9 @@ function HistoryTab({ projectId }: { projectId: string }) {
       </div>
 
       {loading ? (
-        <div className="tf-empty">Loading history...</div>
+        <SvcState variant="loading" resourceName="history" />
       ) : records.length === 0 ? (
-        <div className="tf-empty">No run history found.</div>
+        <SvcState variant="empty" resourceName="run history" />
       ) : (
         <div className="tf-history-layout">
           <div className="tf-history-list">
@@ -2610,7 +2611,7 @@ function HistoryTab({ projectId }: { projectId: string }) {
               <div className="tf-section">
                 <h3>Output</h3>
                 {outputLoading ? (
-                  <div className="tf-empty">Loading output...</div>
+                  <SvcState variant="loading" resourceName="output" compact />
                 ) : (
                   <div className="tf-output-panel">{runOutput || '(no output)'}</div>
                 )}
@@ -3283,7 +3284,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand, onNavigateS
         {/* Left: Project Table */}
         <div className="tf-project-table-area">
           {projects.length === 0 ? (
-            <div className="tf-empty">No projects added. Click Add Project to get started.</div>
+            <SvcState variant="empty" message="No projects added. Click Add Project to get started." />
           ) : (
             <table className="tf-data-table">
               <thead>
@@ -3317,7 +3318,7 @@ export function TerraformConsole({ connection, onRunTerminalCommand, onNavigateS
         {/* Right: Detail Pane */}
         <div className="tf-detail-pane">
           {!detail ? (
-            <div className="tf-empty" style={{ padding: 24 }}>Select a project to view details.</div>
+            <SvcState variant="no-selection" resourceName="project" message="Select a project to view details." />
           ) : (
             <>
               {/* Detail tabs */}

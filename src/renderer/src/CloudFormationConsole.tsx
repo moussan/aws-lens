@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { SvcState } from './SvcState'
 
 import type {
   AwsConnection,
@@ -308,7 +309,7 @@ function CfnDiagramView({ diagram }: { diagram: Diagram }) {
   }, [hoveredNode, diagram.edges])
 
   if (diagram.nodes.length === 0) {
-    return <div className="tf-diagram-container"><div className="tf-diagram-empty">Select a stack to view its resource diagram.</div></div>
+    return <div className="tf-diagram-container"><SvcState variant="no-selection" resourceName="stack" message="Select a stack to view its resource diagram." /></div>
   }
 
   const scale = zoom / 100
@@ -731,7 +732,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
         <button className="svc-tab right" type="button" onClick={() => void load(selectedStack)}>Refresh</button>
       </div>
 
-      {error && <div className="svc-error">{error}</div>}
+      {error && <SvcState variant="error" error={error} />}
 
       {tab === 'stacks' && (
         <>
@@ -766,7 +767,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                   ))}
                 </tbody>
               </table>
-              {!filteredStacks.length && !loading && <div className="svc-empty">No stacks found.</div>}
+              {!filteredStacks.length && !loading && <SvcState variant="empty" resourceName="stacks" compact />}
             </div>
 
             <div className="svc-sidebar">
@@ -777,7 +778,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                   <div className="svc-kv-row"><div className="svc-kv-label">Change Sets</div><div className="svc-kv-value">{changeSets.length}</div></div>
                   <div className="svc-kv-row"><div className="svc-kv-label">Drift</div><div className="svc-kv-value"><span className={`svc-badge ${badgeClass(driftSummary?.stackDriftStatus ?? 'NOT_CHECKED')}`}>{driftSummary?.stackDriftStatus ?? 'NOT_CHECKED'}</span></div></div>
                 </div>
-                {detailLoading && <div className="svc-section-hint" style={{ marginTop: 10 }}>Refreshing stack detail...</div>}
+                {detailLoading && <SvcState variant="loading" message="Refreshing stack detail…" compact />}
               </div>
 
               <div className="svc-side-tabs">
@@ -815,7 +816,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                         ))}
                       </tbody>
                     </table>
-                    {!resources.length && <div className="svc-empty">Select a stack to view resources.</div>}
+                    {!resources.length && <SvcState variant="no-selection" resourceName="stack" message="Select a stack to view resources." compact />}
                   </div>
                 </div>
               )}
@@ -824,7 +825,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                 <>
                   <div className="svc-section">
                     <h3>Create Change Set</h3>
-                    {createError && <div className="svc-error" style={{ marginBottom: 10 }}>{createError}</div>}
+                    {createError && <SvcState variant="error" error={createError} compact />}
                     <div className="svc-form">
                       <label><span>Name</span><input value={changeSetName} onChange={(event) => setChangeSetName(event.target.value)} placeholder="preview-update" /></label>
                       <label><span>Description</span><input value={changeSetDescription} onChange={(event) => setChangeSetDescription(event.target.value)} placeholder="Preview stack update" /></label>
@@ -860,13 +861,13 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                           </button>
                         ))}
                       </div>
-                    ) : <div className="svc-empty">No change sets found for this stack.</div>}
+                    ) : <SvcState variant="empty" resourceName="change sets" message="No change sets found for this stack." compact />}
                   </div>
 
                   <div className="svc-section">
                     <h3>Change Set Detail</h3>
-                    {changeSetDetailLoading && <div className="svc-empty">Loading change set detail...</div>}
-                    {!changeSetDetailLoading && !selectedChangeSetDetail && <div className="svc-empty">Select a change set to inspect changes before execution.</div>}
+                    {changeSetDetailLoading && <SvcState variant="loading" resourceName="change set detail" compact />}
+                    {!changeSetDetailLoading && !selectedChangeSetDetail && <SvcState variant="no-selection" resourceName="change set" message="Select a change set to inspect changes before execution." compact />}
                     {!changeSetDetailLoading && selectedChangeSetDetail && (
                       <>
                         <div className="svc-btn-row" style={{ marginBottom: 12 }}>
@@ -919,7 +920,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                                 </tbody>
                               </table>
                             </div>
-                          ) : <div className="svc-empty">No change rows returned yet.</div>}
+                          ) : <SvcState variant="empty" message="No change rows returned yet." compact />}
                         </div>
 
                         <div style={{ marginTop: 14 }}>
@@ -939,7 +940,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                                 </tbody>
                               </table>
                             </div>
-                          ) : <div className="svc-empty">No parameter overrides were supplied.</div>}
+                          ) : <SvcState variant="empty" message="No parameter overrides were supplied." compact />}
                         </div>
 
                         <RawJsonBlock title="Raw JSON" json={selectedChangeSetDetail.rawJson} />
@@ -959,7 +960,7 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                     <button className="svc-btn" type="button" disabled={driftLoading} onClick={() => void handleRefreshDrift()}>Refresh Drift</button>
                   </div>
 
-                  {driftLoading && <div className="svc-section-hint">Refreshing drift state...</div>}
+                  {driftLoading && <SvcState variant="loading" message="Refreshing drift state…" compact />}
                   {driftSummary ? (
                     <>
                       <div className="svc-kv">
@@ -989,12 +990,12 @@ export function CloudFormationConsole({ connection }: { connection: AwsConnectio
                               </tbody>
                             </table>
                           </div>
-                        ) : <div className="svc-empty">{driftSummary.detectionStatus === 'DETECTION_COMPLETE' ? 'No drifted resources were returned for this stack.' : 'Run drift detection to compare the template against live resources.'}</div>}
+                        ) : <SvcState variant="empty" message={driftSummary.detectionStatus === 'DETECTION_COMPLETE' ? 'No drifted resources were returned for this stack.' : 'Run drift detection to compare the template against live resources.'} compact />}
                       </div>
 
                       {driftRows.length > 0 && <RawJsonBlock title="Raw Drift JSON" json={safePretty(driftRows.map((row) => ({ logicalResourceId: row.logicalResourceId, physicalResourceId: row.physicalResourceId, resourceType: row.resourceType, driftStatus: row.driftStatus, propertyDifferences: row.propertyDifferences })))} />}
                     </>
-                  ) : <div className="svc-empty">Select a stack to inspect drift state.</div>}
+                  ) : <SvcState variant="no-selection" resourceName="stack" message="Select a stack to inspect drift state." compact />}
                 </div>
               )}
             </div>

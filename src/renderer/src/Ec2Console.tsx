@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './ec2.css'
+import { SvcState } from './SvcState'
 
 import type {
   AwsConnection,
@@ -1099,7 +1100,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
     ? `ssh -i ${quoteSshArg(sshKey || `~/.ssh/${detail.keyName}.pem`)} ${sshUser}@${detail.publicIp !== '-' ? detail.publicIp : detail.privateIp}`
     : ''
 
-  if (loading) return <div className="ec2-empty">Loading EC2 data...</div>
+  if (loading) return <SvcState variant="loading" resourceName="EC2" />
 
   return (
     <div className="ec2-console">
@@ -1217,7 +1218,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                 </tbody>
               </table>
               {!filteredInstances.length && (
-                <div className="ec2-empty">No instances match filters.</div>
+                <SvcState variant="no-filter-matches" resourceName="instances" compact />
               )}
             </div>
 
@@ -1604,7 +1605,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                               <strong>{session.documentName}</strong>
                               <span>{session.status} · {session.startedAt !== '-' ? new Date(session.startedAt).toLocaleString() : '-'}</span>
                             </div>
-                          )) : <div className="ec2-empty">No recent SSM sessions.</div>}
+                          )) : <SvcState variant="empty" resourceName="recent SSM sessions" compact />}
                           <h4>Command History</h4>
                           {ssmHistory.length ? ssmHistory.map((item) => (
                             <div key={item.commandId} className="ec2-ssm-history-item">
@@ -1614,11 +1615,11 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                                 <pre className="ec2-ssm-output">{(item.standardOutput || item.standardError).slice(0, 1200)}</pre>
                               )}
                             </div>
-                          )) : <div className="ec2-empty">No commands run in this view yet.</div>}
+                          )) : <SvcState variant="empty" message="No commands run in this view yet." compact />}
                         </div>
                       </>
                     ) : (
-                      <div className="ec2-empty">Select an instance to inspect Session Manager state.</div>
+                      <SvcState variant="no-selection" resourceName="instance" message="Select an instance to inspect Session Manager state." compact />
                     )}
                   </div>
 
@@ -1641,7 +1642,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                           {instance.source === 'temp-inspection' && <div className="ec2-list-meta">Temp inspection for {instance.sourceVolumeId}</div>}
                         </button>
                       ))}
-                      {!ssmManagedInstances.length && <div className="ec2-empty">No managed instances in this region.</div>}
+                      {!ssmManagedInstances.length && <SvcState variant="empty" resourceName="managed instances" message="No managed instances in this region." compact />}
                     </div>
                   </div>
                 </>
@@ -1659,13 +1660,13 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                       <input type="date" value={timelineEnd} onChange={e => setTimelineEnd(e.target.value)} />
                     </label>
                   </div>
-                  {!selectedId && <div className="ec2-empty">Select an instance to view events.</div>}
-                  {selectedId && timelineLoading && <div className="ec2-empty">Loading events…</div>}
+                  {!selectedId && <SvcState variant="no-selection" resourceName="instance" message="Select an instance to view events." compact />}
+                  {selectedId && timelineLoading && <SvcState variant="loading" resourceName="events" compact />}
                   {selectedId && !timelineLoading && timelineError && (
-                    <div className="ec2-empty" style={{ color: '#f87171' }}>{timelineError}</div>
+                    <SvcState variant="error" error={timelineError} compact />
                   )}
                   {selectedId && !timelineLoading && !timelineError && timelineEvents.length === 0 && (
-                    <div className="ec2-empty">No CloudTrail events found.</div>
+                    <SvcState variant="empty" resourceName="CloudTrail events" compact />
                   )}
                   {selectedId && !timelineLoading && timelineEvents.length > 0 && (
                     <div className="ec2-timeline-table-wrap">
@@ -1727,7 +1728,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                   </button>
                 )
               })}
-              {!filteredVolumes.length && <div className="ec2-empty">No volumes match the current filter.</div>}
+              {!filteredVolumes.length && <SvcState variant="no-filter-matches" resourceName="volumes" compact />}
             </div>
           </div>
 
@@ -1785,7 +1786,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                     )}
                   </div>
                 </>
-              ) : <div className="ec2-empty">Select a volume.</div>}
+              ) : <SvcState variant="no-selection" resourceName="volume" compact />}
             </div>
 
             {volumeDetail && (
@@ -1804,7 +1805,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                     ))}
                   </div>
                 ) : (
-                  <div className="ec2-empty">No active attachments.</div>
+                  <SvcState variant="empty" resourceName="active attachments" compact />
                 )}
               </div>
             )}
@@ -1814,7 +1815,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                 <h3>Recommendations</h3>
                 {volumeWarnings.length ? volumeWarnings.map((warning) => (
                   <div key={warning} className="ec2-volume-warning">{warning}</div>
-                )) : <div className="ec2-empty">No immediate recommendations.</div>}
+                )) : <SvcState variant="empty" resourceName="immediate recommendations" compact />}
                 <div className="ec2-volume-actions-note">
                   Additional actions: delete volume, tag/untag, attach/detach, and modify size/type/IOPS/throughput should follow the same EC2 detail workflow next.
                 </div>
@@ -1832,7 +1833,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                     ))}
                   </div>
                 ) : (
-                  <div className="ec2-empty">No tags.</div>
+                  <SvcState variant="empty" resourceName="tags" compact />
                 )}
               </div>
             )}
@@ -1881,7 +1882,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                   <div className="ec2-list-meta"><span className={`ec2-badge ${s.state}`}>{s.state}</span> | {s.progress}</div>
                 </button>
               ))}
-              {!snapshots.length && <div className="ec2-empty">No snapshots.</div>}
+              {!snapshots.length && <SvcState variant="empty" resourceName="snapshots" compact />}
             </div>
           </div>
           <div className="ec2-detail-stack">
@@ -1902,7 +1903,7 @@ useEffect(() => { void reload(); void loadRecommendations() }, [connection.sessi
                     <ConfirmButton type="button" className="danger" onConfirm={() => void doDeleteSnap()} confirmLabel="Confirm Delete?">Delete Snapshot</ConfirmButton>
                   </div>
                 </>
-              ) : <div className="ec2-empty">Select a snapshot.</div>}
+              ) : <SvcState variant="no-selection" resourceName="snapshot" compact />}
             </div>
 
             {/* Tag */}

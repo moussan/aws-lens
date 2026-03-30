@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { SvcState } from './SvcState'
 
 import type {
   ComparisonDiffRow,
@@ -232,7 +233,7 @@ export function CompareWorkspace({
 
   return (
     <div className="stack">
-      {error && <div className="error-banner">{error}</div>}
+      {error && <SvcState variant="error" error={error} />}
 
       <section className="hero catalog-hero">
         <div>
@@ -449,7 +450,7 @@ export function CompareWorkspace({
         </>
       ) : (
         <section className="panel">
-          <div className="empty-state compact">Choose two contexts, then run the diff to load summary totals, inventory deltas, posture changes, ownership tags, and cost signals.</div>
+          <SvcState variant="no-selection" message="Choose two contexts, then run the diff to load summary totals, inventory deltas, posture changes, ownership tags, and cost signals." />
         </section>
       )}
     </div>

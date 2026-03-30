@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import './ecs.css'
+import { SvcState } from './SvcState'
 
 import type {
   AwsConnection,
@@ -393,7 +394,7 @@ export function EcsConsole({
   }
 
   if (loading && !diagnostics && services.length === 0) {
-    return <div className="ecs-empty">Loading ECS deployment diagnostics...</div>
+    return <SvcState variant="loading" resourceName="ECS deployment diagnostics" />
   }
 
   return (
@@ -405,7 +406,7 @@ export function EcsConsole({
         <button className="ecs-tab" type="button" onClick={() => void load(selectedClusterArn, selectedServiceName)} style={{ marginLeft: 'auto' }}>Refresh</button>
       </div>
 
-      {error && <div className="ecs-error">{error}</div>}
+      {error && <SvcState variant="error" error={error} />}
       {msg && <div className="ecs-msg">{msg}</div>}
 
       <div className="ecs-filter-bar">
@@ -464,7 +465,7 @@ export function EcsConsole({
       </div>
 
       {!diagnostics && !loading && services.length === 0 && (
-        <div className="ecs-empty">Select a cluster and service to inspect deployment diagnostics.</div>
+        <SvcState variant="no-selection" message="Select a cluster and service to inspect deployment diagnostics." />
       )}
 
       {mainTab === 'lab' && (
@@ -513,7 +514,7 @@ export function EcsConsole({
                         ))}
                       </tbody>
                     </table>
-                    {!filteredServices.length && <div className="ecs-empty">No services match the current filters.</div>}
+                    {!filteredServices.length && <SvcState variant="no-filter-matches" resourceName="services" compact />}
                   </>
                 ) : (
                   <>
@@ -574,8 +575,8 @@ export function EcsConsole({
                         ))}
                       </tbody>
                     </table>
-                    {!diagnostics && <div className="ecs-empty">Select a service to load tasks and diagnostics.</div>}
-                    {diagnostics && !filteredTasks.length && <div className="ecs-empty">No tasks match the current filters.</div>}
+                    {!diagnostics && <SvcState variant="no-selection" resourceName="service" message="Select a service to load tasks and diagnostics." compact />}
+                    {diagnostics && !filteredTasks.length && <SvcState variant="no-filter-matches" resourceName="tasks" compact />}
                   </>
                 )}
               </div>
@@ -685,7 +686,7 @@ export function EcsConsole({
                   </tbody>
                 </table>
               ) : (
-                <div className="ecs-empty">No deployment history returned.</div>
+                <SvcState variant="empty" resourceName="deployment history" compact />
               )}
             </div>
 
@@ -728,7 +729,7 @@ export function EcsConsole({
                   </div>
                 </>
               ) : (
-                <div className="ecs-empty">No task selected.</div>
+                <SvcState variant="no-selection" resourceName="task" compact />
               )}
             </div>
 
@@ -756,7 +757,7 @@ export function EcsConsole({
                   </div>
                 </>
               ) : (
-                <div className="ecs-empty">Task definition details were not returned.</div>
+                <SvcState variant="empty" message="Task definition details were not returned." compact />
               )}
             </div>
 
@@ -777,7 +778,7 @@ export function EcsConsole({
                   ))}
                 </div>
               ) : (
-                <div className="ecs-empty">{logStatus || 'Select a task or container with logs to inspect output.'}</div>
+                <SvcState variant={logStatus ? 'loading' : 'no-selection'} message={logStatus || 'Select a task or container with logs to inspect output.'} compact />
               )}
             </div>
 
@@ -793,7 +794,7 @@ export function EcsConsole({
                   ))}
                 </div>
               ) : (
-                <div className="ecs-empty">No recent service events.</div>
+                <SvcState variant="empty" resourceName="recent service events" compact />
               )}
             </div>
             </aside>
