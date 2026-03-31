@@ -163,9 +163,8 @@ function baseReleaseInfo(): AppReleaseInfo {
   }
 }
 
-let cachedReleaseInfo: AppReleaseInfo = baseReleaseInfo()
-
 let startupReleaseCheckPromise: Promise<AppReleaseInfo> | null = null
+let cachedReleaseInfo: AppReleaseInfo = baseReleaseInfo()
 let autoUpdaterInitialized = false
 
 function compareVersions(left: string, right: string): number {
