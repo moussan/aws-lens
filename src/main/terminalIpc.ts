@@ -6,16 +6,25 @@ import { buildAwsContextCommand, getShellConfig, getTerminalCwd } from './shell'
 import { getConnectionEnv } from './sessionHub'
 
 type TerminalEvent =
-  | { type: 'output'; text: string }
-  | { type: 'exit'; code: number | null }
+  | { sessionId: string; type: 'output'; text: string }
+  | { sessionId: string; type: 'exit'; code: number | null }
 
-type TerminalSession = {
-  pty: IPty
-  ownerId: number
-  contextKey: string
+type TerminalOpenResult = {
+  created: boolean
+  history: string
 }
 
-let session: TerminalSession | null = null
+type TerminalSession = {
+  id: string
+  pty: IPty
+  ownerId: number
+  connection: AwsConnection
+  contextKey: string
+  history: string
+}
+
+const sessions = new Map<string, TerminalSession>()
+const MAX_HISTORY_CHARS = 200_000
 
 function emitToOwner(ownerId: number, payload: TerminalEvent): void {
   const window = BrowserWindow.getAllWindows().find((entry) => entry.webContents.id === ownerId)
@@ -30,18 +39,23 @@ function buildContextCommand(connection: AwsConnection): string {
   return buildAwsContextCommand(connection)
 }
 
-function updateContext(connection: AwsConnection): void {
-  if (!session) {
-    return
-  }
+function appendHistory(targetSession: TerminalSession, text: string): void {
+  const nextHistory = `${targetSession.history}${text}`
+  targetSession.history =
+    nextHistory.length > MAX_HISTORY_CHARS ? nextHistory.slice(nextHistory.length - MAX_HISTORY_CHARS) : nextHistory
+}
 
+function updateContext(targetSession: TerminalSession, connection: AwsConnection): void {
   const nextKey = getContextKey(connection)
-  if (session.contextKey === nextKey) {
+  targetSession.connection = connection
+
+  if (targetSession.contextKey === nextKey) {
     return
   }
 
-  session.contextKey = nextKey
-  session.pty.write(`${buildContextCommand(connection)}\r`)
+  targetSession.contextKey = nextKey
+  targetSession.connection = connection
+  targetSession.pty.write(`${buildContextCommand(connection)}\r`)
 }
 
 function runCommandInSession(targetSession: TerminalSession, command: string, delayMs = 0): void {
@@ -51,9 +65,10 @@ function runCommandInSession(targetSession: TerminalSession, command: string, de
   }
 
   const write = () => {
-    if (session?.pty !== targetSession.pty) {
+    if (!sessions.has(targetSession.id)) {
       return
     }
+
     targetSession.pty.write(`${normalized}\r`)
   }
 
@@ -65,7 +80,7 @@ function runCommandInSession(targetSession: TerminalSession, command: string, de
   write()
 }
 
-function createSession(sender: WebContents, connection: AwsConnection): TerminalSession {
+function createSession(sessionId: string, sender: WebContents, connection: AwsConnection): TerminalSession {
   const shell = getShellConfig()
   const pty = spawn(shell.command, shell.args, {
     name: 'xterm-color',
@@ -82,64 +97,95 @@ function createSession(sender: WebContents, connection: AwsConnection): Terminal
   })
 
   const nextSession: TerminalSession = {
+    id: sessionId,
     pty,
     ownerId: sender.id,
-    contextKey: getContextKey(connection)
+    connection,
+    contextKey: getContextKey(connection),
+    history: ''
   }
 
   pty.onData((text) => {
-    emitToOwner(nextSession.ownerId, { type: 'output', text })
+    appendHistory(nextSession, text)
+    emitToOwner(nextSession.ownerId, { sessionId, type: 'output', text })
   })
 
   pty.onExit(({ exitCode }) => {
-    if (session?.pty === pty) {
-      session = null
-    }
-    emitToOwner(nextSession.ownerId, { type: 'exit', code: exitCode })
+    sessions.delete(sessionId)
+    appendHistory(nextSession, `\r\n[terminal exited with code ${exitCode ?? 'null'}]\r\n`)
+    emitToOwner(nextSession.ownerId, { sessionId, type: 'exit', code: exitCode })
   })
 
   pty.write(`${buildContextCommand(connection)}\r`)
   return nextSession
 }
 
-function ensureSession(sender: WebContents, connection: AwsConnection): TerminalSession {
-  if (!session) {
-    session = createSession(sender, connection)
-    return session
+function ensureSession(sessionId: string, sender: WebContents, connection: AwsConnection): { session: TerminalSession; created: boolean } {
+  const existing = sessions.get(sessionId)
+  if (!existing) {
+    const created = createSession(sessionId, sender, connection)
+    sessions.set(sessionId, created)
+    return { session: created, created: true }
   }
 
-  session.ownerId = sender.id
-  updateContext(connection)
+  existing.ownerId = sender.id
+  updateContext(existing, connection)
+  return { session: existing, created: false }
+}
+
+function requireSession(sessionId: string): TerminalSession {
+  const session = sessions.get(sessionId)
+  if (!session) {
+    throw new Error('Terminal session is not running.')
+  }
+
   return session
 }
 
+function closeSession(sessionId: string): void {
+  const current = sessions.get(sessionId)
+  if (!current) {
+    return
+  }
+
+  sessions.delete(sessionId)
+  current.pty.kill()
+}
+
+function closeAllSessions(): void {
+  for (const sessionId of Array.from(sessions.keys())) {
+    closeSession(sessionId)
+  }
+}
+
 export function registerTerminalIpcHandlers(): void {
-  ipcMain.handle('terminal:open-aws', async (event, connection: AwsConnection, initialCommand?: string) => {
-    const currentSession = ensureSession(event.sender, connection)
-    runCommandInSession(currentSession, initialCommand ?? '', 120)
-  })
+  ipcMain.handle('terminal:open-aws', async (event, sessionId: string, connection: AwsConnection, initialCommand?: string): Promise<TerminalOpenResult> => {
+    const { session: currentSession, created } = ensureSession(sessionId, event.sender, connection)
 
-  ipcMain.handle('terminal:update-aws-context', async (_event, connection: AwsConnection) => {
-    updateContext(connection)
-  })
-
-  ipcMain.handle('terminal:input', async (_event, input: string) => {
-    if (!session) {
-      throw new Error('Terminal is not running.')
+    if (created) {
+      runCommandInSession(currentSession, initialCommand ?? '', 120)
     }
 
-    session.pty.write(input)
-  })
-
-  ipcMain.handle('terminal:run-command', async (_event, command: string) => {
-    if (!session) {
-      throw new Error('Terminal is not running.')
+    return {
+      created,
+      history: currentSession.history
     }
-
-    runCommandInSession(session, command)
   })
 
-  ipcMain.handle('terminal:resize', async (_event, cols: number, rows: number) => {
+  ipcMain.handle('terminal:update-aws-context', async (_event, sessionId: string, connection: AwsConnection) => {
+    updateContext(requireSession(sessionId), connection)
+  })
+
+  ipcMain.handle('terminal:input', async (_event, sessionId: string, input: string) => {
+    requireSession(sessionId).pty.write(input)
+  })
+
+  ipcMain.handle('terminal:run-command', async (_event, sessionId: string, command: string) => {
+    runCommandInSession(requireSession(sessionId), command)
+  })
+
+  ipcMain.handle('terminal:resize', async (_event, sessionId: string, cols: number, rows: number) => {
+    const session = sessions.get(sessionId)
     if (!session) {
       return
     }
@@ -147,13 +193,12 @@ export function registerTerminalIpcHandlers(): void {
     session.pty.resize(Math.max(20, cols), Math.max(8, rows))
   })
 
-  ipcMain.handle('terminal:close', async () => {
-    if (!session) {
+  ipcMain.handle('terminal:close', async (_event, sessionId?: string) => {
+    if (sessionId) {
+      closeSession(sessionId)
       return
     }
 
-    const current = session
-    session = null
-    current.pty.kill()
+    closeAllSessions()
   })
 }

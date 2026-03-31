@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 
 import { FitAddon } from 'xterm-addon-fit'
 import { Terminal } from 'xterm'
@@ -20,6 +20,168 @@ type TerminalBundle = {
   fit: FitAddon
 }
 
+type TerminalTab = {
+  id: string
+  connection: AwsConnection
+  title: string
+  status: 'starting' | 'running' | 'exited'
+  exitCode: number | null
+}
+
+const DEFAULT_PANEL_HEIGHT = 320
+const MIN_PANEL_HEIGHT = 220
+const MAX_PANEL_HEIGHT = 640
+const HEIGHT_STORAGE_KEY = 'aws-lens:terminal-height'
+
+function makeTerminalId(): string {
+  return `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function makeTabLabel(connection: AwsConnection, duplicateCount: number): string {
+  const suffix = duplicateCount > 0 ? ` ${duplicateCount + 1}` : ''
+  return `${connection.label}${suffix}`
+}
+
+function clampPanelHeight(nextHeight: number): number {
+  return Math.min(MAX_PANEL_HEIGHT, Math.max(MIN_PANEL_HEIGHT, Math.round(nextHeight)))
+}
+
+function matchesConnection(left: AwsConnection, right: AwsConnection): boolean {
+  return left.sessionId === right.sessionId && left.region === right.region
+}
+
+function TerminalTabSurface({
+  tab,
+  active,
+  drawerOpen,
+  initialCommand,
+  onInitialCommandHandled,
+  onExited
+}: {
+  tab: TerminalTab
+  active: boolean
+  drawerOpen: boolean
+  initialCommand?: string
+  onInitialCommandHandled: () => void
+  onExited: (sessionId: string, code: number | null) => void
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const bundleRef = useRef<TerminalBundle | null>(null)
+  const initialCommandRef = useRef(initialCommand)
+  const activeRef = useRef(active)
+  const drawerOpenRef = useRef(drawerOpen)
+  const onExitedRef = useRef(onExited)
+  const onInitialCommandHandledRef = useRef(onInitialCommandHandled)
+
+  useEffect(() => {
+    activeRef.current = active
+    drawerOpenRef.current = drawerOpen
+    onExitedRef.current = onExited
+    onInitialCommandHandledRef.current = onInitialCommandHandled
+  }, [active, drawerOpen, onExited, onInitialCommandHandled])
+
+  useEffect(() => {
+    if (!hostRef.current || bundleRef.current) {
+      return
+    }
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: '"IBM Plex Mono", "Consolas", monospace',
+      fontSize: 13,
+      lineHeight: 1.25,
+      theme: {
+        background: '#000000',
+        foreground: '#f3f4f6',
+        cursor: '#f3f4f6',
+        selectionBackground: 'rgba(148, 163, 184, 0.28)'
+      }
+    })
+    const fit = new FitAddon()
+
+    term.loadAddon(fit)
+    term.open(hostRef.current)
+    bundleRef.current = { term, fit }
+
+    function syncTerminalSize(): Promise<void> {
+      fit.fit()
+      return resizeAwsTerminal(tab.id, term.cols, term.rows)
+    }
+
+    function resizeAndSendInput(data: string): Promise<void> {
+      return Promise.resolve().then(async () => {
+        await syncTerminalSize()
+        await sendAwsTerminalInput(tab.id, data)
+      })
+    }
+
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type === 'keydown' && event.key === 'Backspace') {
+        void resizeAndSendInput('\x7f')
+        return false
+      }
+
+      return true
+    })
+
+    const inputDisposable = term.onData((data) => {
+      void resizeAndSendInput(data)
+    })
+
+    const unsubscribe = subscribeToAwsTerminal((event: TerminalEvent) => {
+      if (event.sessionId !== tab.id) {
+        return
+      }
+
+      if (event.type === 'output') {
+        term.write(event.text)
+        return
+      }
+
+      onExitedRef.current(tab.id, event.code)
+    })
+
+    const observer = new ResizeObserver(() => {
+      if (activeRef.current && drawerOpenRef.current) {
+        void syncTerminalSize()
+      }
+    })
+    observer.observe(hostRef.current)
+
+    void openAwsTerminal(tab.id, tab.connection, initialCommandRef.current).then(async (result) => {
+      if (result.history) {
+        term.write(result.history)
+      }
+
+      onInitialCommandHandledRef.current()
+      if (activeRef.current && drawerOpenRef.current) {
+        await syncTerminalSize()
+        term.focus()
+      }
+    })
+
+    return () => {
+      observer.disconnect()
+      unsubscribe()
+      inputDisposable.dispose()
+      term.dispose()
+      bundleRef.current = null
+    }
+  }, [tab.connection, tab.id])
+
+  useEffect(() => {
+    if (!active || !drawerOpen || !bundleRef.current) {
+      return
+    }
+
+    bundleRef.current.fit.fit()
+    void resizeAwsTerminal(tab.id, bundleRef.current.term.cols, bundleRef.current.term.rows)
+    bundleRef.current.term.focus()
+  }, [active, drawerOpen, tab.id])
+
+  return <div ref={hostRef} className={`terminal-surface ${active ? 'is-active' : 'is-hidden'}`} />
+}
+
 export function AwsTerminalPanel({
   connection,
   open,
@@ -33,177 +195,274 @@ export function AwsTerminalPanel({
   commandToRun: { id: number; command: string } | null
   onCommandHandled: (id: number) => void
 }) {
-  const hostRef = useRef<HTMLDivElement | null>(null)
-  const bundleRef = useRef<TerminalBundle | null>(null)
-  const sessionKeyRef = useRef('')
-  const [running, setRunning] = useState(false)
+  const tabsRef = useRef<TerminalTab[]>([])
+  const resizeStateRef = useRef<{ startY: number; startHeight: number } | null>(null)
+  const [tabs, setTabs] = useState<TerminalTab[]>([])
+  const [activeTabId, setActiveTabId] = useState<string | null>(null)
+  const [panelHeight, setPanelHeight] = useState<number>(() => {
+    if (typeof window === 'undefined') {
+      return DEFAULT_PANEL_HEIGHT
+    }
+
+    const saved = window.localStorage.getItem(HEIGHT_STORAGE_KEY)
+    return saved ? clampPanelHeight(Number(saved)) : DEFAULT_PANEL_HEIGHT
+  })
+  const [initialCommandByTab, setInitialCommandByTab] = useState<Record<string, string | undefined>>({})
 
   useEffect(() => {
-    if (!open || !hostRef.current || bundleRef.current) {
+    tabsRef.current = tabs
+  }, [tabs])
+
+  useEffect(() => {
+    window.localStorage.setItem(HEIGHT_STORAGE_KEY, String(panelHeight))
+  }, [panelHeight])
+
+  useEffect(() => {
+    if (!open || tabsRef.current.length > 0 || !connection || commandToRun) {
       return
     }
 
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: '"IBM Plex Mono", "Consolas", monospace',
-      fontSize: 13,
-      lineHeight: 1.25,
-      theme: {
-        background: '#071015',
-        foreground: '#dfeff7',
-        cursor: '#f58540',
-        selectionBackground: 'rgba(223, 105, 42, 0.18)'
-      }
-    })
-    const fit = new FitAddon()
+    const tabId = createTab(connection)
+    setActiveTabId(tabId)
+  }, [commandToRun, connection, open])
 
-    term.loadAddon(fit)
-    term.open(hostRef.current)
-    fit.fit()
-    term.focus()
-    bundleRef.current = { term, fit }
-
-    const writeEvent = (event: TerminalEvent) => {
-      if (event.type === 'output') {
-        term.write(event.text)
-        return
-      }
-
-      term.writeln(`\r\n[terminal exited with code ${event.code ?? 'null'}]`)
-      setRunning(false)
-      sessionKeyRef.current = ''
+  useEffect(() => {
+    if (!open || !connection) {
+      return
     }
 
-    const unsubscribe = subscribeToAwsTerminal(writeEvent)
-    term.attachCustomKeyEventHandler((event) => {
-      if (event.type === 'keydown' && event.key === 'Backspace') {
-        void resizeAndSendInput('\x7f')
-        return false
-      }
-      return true
-    })
-    const disposable = term.onData((data) => {
-      void resizeAndSendInput(data)
-    })
+    const existing = tabsRef.current.find((tab) => tab.id === activeTabId)
+    if (existing && !matchesConnection(existing.connection, connection)) {
+      void updateAwsTerminalContext(existing.id, connection)
+      setTabs((current) =>
+        current.map((tab) =>
+          tab.id === existing.id
+            ? {
+                ...tab,
+                connection,
+                title: connection.label
+              }
+            : tab
+        )
+      )
+    }
+  }, [activeTabId, connection, open])
 
-    const observer = new ResizeObserver(() => {
-      void syncTerminalSize()
-    })
-    observer.observe(hostRef.current)
-
-    function syncTerminalSize(): Promise<void> {
-      fit.fit()
-      return resizeAwsTerminal(term.cols, term.rows)
+  useEffect(() => {
+    if (!open || !connection || !commandToRun) {
+      return
     }
 
-    function resizeAndSendInput(data: string): Promise<void> {
-      return Promise.resolve().then(async () => {
-        await syncTerminalSize()
-        await sendAwsTerminalInput(data)
+    const matchingTab = tabsRef.current.find((tab) => matchesConnection(tab.connection, connection))
+    if (matchingTab) {
+      setActiveTabId(matchingTab.id)
+      void runAwsTerminalCommand(matchingTab.id, commandToRun.command).then(() => {
+        onCommandHandled(commandToRun.id)
       })
+      return
     }
 
-    void syncTerminalSize()
+    const tabId = createTab(connection, commandToRun.command)
+    setActiveTabId(tabId)
+    onCommandHandled(commandToRun.id)
+  }, [commandToRun, connection, onCommandHandled, open])
 
+  useEffect(() => {
     return () => {
-      observer.disconnect()
-      disposable.dispose()
-      unsubscribe()
-      term.dispose()
-      bundleRef.current = null
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
     }
-  }, [open])
+  }, [])
 
-  useEffect(() => {
-    if (!open) {
+  function createTab(targetConnection: AwsConnection, initialCommand?: string): string {
+    const id = makeTerminalId()
+    const duplicateCount = tabsRef.current.filter((tab) => tab.connection.label === targetConnection.label).length
+    const nextTab: TerminalTab = {
+      id,
+      connection: targetConnection,
+      title: makeTabLabel(targetConnection, duplicateCount),
+      status: 'starting',
+      exitCode: null
+    }
+
+    tabsRef.current = [...tabsRef.current, nextTab]
+    setTabs(tabsRef.current)
+    if (initialCommand) {
+      setInitialCommandByTab((current) => ({ ...current, [id]: initialCommand }))
+    }
+
+    return id
+  }
+
+  function handlePointerMove(event: PointerEvent): void {
+    const state = resizeStateRef.current
+    if (!state) {
       return
     }
 
-    bundleRef.current?.term.focus()
-  }, [open])
+    setPanelHeight(clampPanelHeight(state.startHeight + (state.startY - event.clientY)))
+  }
 
-  useEffect(() => {
-    if (!open) {
-      return
+  function handlePointerUp(): void {
+    resizeStateRef.current = null
+    window.removeEventListener('pointermove', handlePointerMove)
+    window.removeEventListener('pointerup', handlePointerUp)
+  }
+
+  function startResize(event: ReactPointerEvent<HTMLDivElement>): void {
+    resizeStateRef.current = {
+      startY: event.clientY,
+      startHeight: panelHeight
     }
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+  }
 
+  function handleCreateTab(): void {
     if (!connection) {
-      sessionKeyRef.current = ''
-      setRunning(false)
       return
     }
 
-    const nextKey = `${connection.sessionId}:${connection.region}`
-    if (!running) {
-      sessionKeyRef.current = nextKey
-      const initialCommand = commandToRun?.command
-      void openAwsTerminal(connection, initialCommand).then(async () => {
-        if (commandToRun) {
-          onCommandHandled(commandToRun.id)
-        }
-        setRunning(true)
-        bundleRef.current?.fit.fit()
-        if (bundleRef.current) {
-          await resizeAwsTerminal(bundleRef.current.term.cols, bundleRef.current.term.rows)
-          bundleRef.current.term.focus()
-        }
-      })
-      return
-    }
+    const tabId = createTab(connection)
+    setActiveTabId(tabId)
+  }
 
-    if (sessionKeyRef.current !== nextKey) {
-      sessionKeyRef.current = nextKey
-      void updateAwsTerminalContext(connection)
-    }
-  }, [commandToRun, connection, onCommandHandled, open, running])
-
-  useEffect(() => {
-    if (!open || !running || !connection || !commandToRun) {
-      return
-    }
-
-    const nextKey = `${connection.sessionId}:${connection.region}`
-    if (sessionKeyRef.current !== nextKey) {
-      return
-    }
-
-    void runAwsTerminalCommand(commandToRun.command).then(() => {
-      onCommandHandled(commandToRun.id)
-      bundleRef.current?.term.focus()
+  async function handleCloseTab(sessionId: string): Promise<void> {
+    await closeAwsTerminal(sessionId)
+    setInitialCommandByTab((current) => {
+      const next = { ...current }
+      delete next[sessionId]
+      return next
     })
-  }, [commandToRun, connection, onCommandHandled, open, running])
-
-  async function handleClose(): Promise<void> {
-    setRunning(false)
-    sessionKeyRef.current = ''
-    await closeAwsTerminal()
-    onClose()
+    setTabs((current) => {
+      const nextTabs = current.filter((tab) => tab.id !== sessionId)
+      if (activeTabId === sessionId) {
+        setActiveTabId(nextTabs.at(-1)?.id ?? null)
+      }
+      tabsRef.current = nextTabs
+      return nextTabs
+    })
   }
 
-  if (!open) {
-    return null
+  function handleInitialCommandHandled(sessionId: string): void {
+    setInitialCommandByTab((current) => {
+      if (!(sessionId in current)) {
+        return current
+      }
+
+      const next = { ...current }
+      delete next[sessionId]
+      return next
+    })
+    setTabs((current) =>
+      current.map((tab) =>
+        tab.id === sessionId
+          ? {
+              ...tab,
+              status: tab.status === 'starting' ? 'running' : tab.status
+            }
+          : tab
+      )
+    )
   }
+
+  function handleExited(sessionId: string, code: number | null): void {
+    setTabs((current) =>
+      current.map((tab) =>
+        tab.id === sessionId
+          ? {
+              ...tab,
+              status: 'exited',
+              exitCode: code
+            }
+          : tab
+      )
+    )
+  }
+
+  const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+  const activeStatusLabel =
+    activeTab?.status === 'exited'
+      ? `Exited${activeTab.exitCode === null ? '' : ` (${activeTab.exitCode})`}`
+      : activeTab?.status === 'starting'
+        ? 'Starting'
+        : ''
 
   return (
-    <section className="terminal-drawer panel">
-      <div className="terminal-header">
-        <div>
-          <div className="eyebrow">Terminal</div>
-          <h3>AWS CLI Shell</h3>
-          <p className="terminal-meta">
-            {connection ? `${connection.label} · ${connection.region}` : 'Select a profile and region to start the terminal.'}
-          </p>
-        </div>
-        <div className="button-row terminal-actions">
-          <button type="button" className="terminal-button" onClick={() => bundleRef.current?.term.focus()}>
-            Focus
+    <section
+      className={`terminal-drawer panel ${open ? 'is-open' : 'is-hidden'}`}
+      style={{ height: `${panelHeight}px` }}
+      aria-hidden={!open}
+    >
+      <div className="terminal-resize-handle" onPointerDown={startResize} />
+      <div className="terminal-toolbar">
+        <div className="terminal-tabs" role="tablist" aria-label="Terminal tabs">
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeTabId
+
+            return (
+              <div key={tab.id} className={`terminal-tab ${isActive ? 'is-active' : ''}`}>
+                <button
+                  type="button"
+                  className="terminal-tab-button"
+                  role="tab"
+                  aria-selected={isActive}
+                  onClick={() => setActiveTabId(tab.id)}
+                >
+                  <span>{tab.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className="terminal-tab-close"
+                  aria-label={`Close ${tab.title}`}
+                  onClick={() => void handleCloseTab(tab.id)}
+                >
+                  x
+                </button>
+              </div>
+            )
+          })}
+          <button
+            type="button"
+            className="terminal-toolbar-button is-add"
+            onClick={handleCreateTab}
+            disabled={!connection}
+            aria-label="Open new terminal tab"
+            title="New tab"
+          >
+            +
           </button>
-          <button type="button" className="terminal-button" onClick={() => void handleClose()}>
-            Close
+        </div>
+        <div className="terminal-toolbar-actions">
+          {activeStatusLabel ? <span className="terminal-status-badge">{activeStatusLabel}</span> : null}
+          <button type="button" className="terminal-toolbar-button" onClick={onClose} aria-label="Hide terminal" title="Hide terminal">
+            v
           </button>
         </div>
       </div>
-      <div ref={hostRef} className="terminal-surface" />
+
+      {tabs.length === 0 ? (
+        <div className="terminal-empty-state">
+          <p>Open a terminal tab.</p>
+          <button type="button" className="terminal-toolbar-button" onClick={handleCreateTab} disabled={!connection}>
+            +
+          </button>
+        </div>
+      ) : (
+        <div className="terminal-stack">
+          {tabs.map((tab) => (
+            <TerminalTabSurface
+              key={tab.id}
+              tab={tab}
+              active={tab.id === activeTabId}
+              drawerOpen={open}
+              initialCommand={initialCommandByTab[tab.id]}
+              onInitialCommandHandled={() => handleInitialCommandHandled(tab.id)}
+              onExited={handleExited}
+            />
+          ))}
+        </div>
+      )}
     </section>
   )
 }

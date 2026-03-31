@@ -4697,45 +4697,170 @@ button.overview-tile.clickable.active strong {
   z-index: 20;
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  max-height: min(34vh, 360px);
-  padding: 0.8rem;
-  border-radius: 16px;
-  background: linear-gradient(180deg, rgba(16, 24, 31, 0.98), rgba(8, 12, 17, 0.98));
-}
-
-.terminal-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.terminal-actions {
-  flex-wrap: nowrap;
-}
-
-.terminal-button,
-.footer-terminal-toggle {
-  padding: 0.36rem 0.62rem;
-  min-height: 31px;
-  border-radius: 8px;
-  font-size: 0.77rem;
-}
-
-.footer-terminal-toggle {
-  min-width: 31px;
-  width: 31px;
+  gap: 0;
   padding: 0;
+  border-radius: 0;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #000;
+  box-shadow: none;
+  min-height: 220px;
+  overflow: hidden;
+}
+
+.terminal-drawer.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.terminal-resize-handle {
+  width: 100%;
+  height: 4px;
+  margin: 0;
+  border-radius: 0;
+  background: rgba(245, 133, 64, 0.18);
+  cursor: ns-resize;
+}
+
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 8px;
+  background: linear-gradient(180deg, rgba(16, 24, 31, 0.98), rgba(11, 17, 23, 0.98));
+  border-bottom: 1px solid rgba(245, 133, 64, 0.16);
+}
+
+.terminal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  min-width: 0;
+  flex: 1;
+}
+
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 33px;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+}
+
+.terminal-tab.is-active {
+  background: rgba(245, 133, 64, 0.1);
+}
+
+.terminal-tab-button {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 100%;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: #eef3f8;
+  text-align: left;
+  font-size: 0.75rem;
+  letter-spacing: 0.01em;
+}
+
+.terminal-tab-button span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-tab-close {
+  width: 24px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #aeb8c6;
+  font-size: 0.8rem;
+}
+
+.terminal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 10px;
+}
+
+.terminal-toolbar-button {
+  width: 24px;
+  height: 24px;
   display: inline-grid;
   place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #d8e2ec;
+  font-size: 0.76rem;
+}
+
+.terminal-toolbar-button:hover:not(:disabled),
+.terminal-tab-close:hover {
+  background: rgba(245, 133, 64, 0.12);
+}
+
+.terminal-toolbar-button:disabled {
+  opacity: 0.45;
+}
+
+.terminal-toolbar-button.is-add {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0;
+}
+
+.terminal-status-badge {
+  color: #f0b27a;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.terminal-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #000;
+}
+
+.terminal-empty-state {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  background: #000;
+  color: #9ea4b1;
+}
+
+.footer-terminal-toggle {
+  min-width: 44px;
+  width: 44px;
+  min-height: 34px;
+  height: 34px;
+  padding: 0 0.12rem;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 11px;
 }
 
 .footer-terminal-icon {
   font-family: "IBM Plex Mono", "Consolas", monospace;
-  font-size: 0.82rem;
+  font-size: 0.88rem;
   font-weight: 700;
   line-height: 1;
+  letter-spacing: -0.04em;
 }
 
 .terminal-run-button {
@@ -4759,16 +4884,22 @@ button.overview-tile.clickable.active strong {
 }
 
 .terminal-surface {
-  min-height: 210px;
-  border-radius: 12px;
-  border: 1px solid rgba(200, 200, 215, 0.08);
-  background: #071015;
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+  border: 0;
+  background: #000;
   overflow: hidden;
+}
+
+.terminal-surface.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .terminal-surface .xterm {
   height: 100%;
-  padding: 0.35rem 0.25rem;
+  padding: 10px 8px 8px;
 }
 
 .terminal-form {
