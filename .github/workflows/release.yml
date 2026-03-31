@@ -319,18 +319,16 @@ jobs:
             dist-artifacts/windows-installers/*.exe
             dist-artifacts/windows-installers/*.blockmap
             dist-artifacts/windows-installers/latest*.yml
-            dist-artifacts/windows-installers/app-update.yml
             dist-artifacts/macos-installers/*.dmg
             dist-artifacts/macos-installers/*.zip
             dist-artifacts/macos-installers/*.blockmap
             dist-artifacts/macos-installers/latest*.yml
-            dist-artifacts/macos-installers/app-update.yml
             dist-artifacts/linux-installers/*.deb
             dist-artifacts/linux-installers/*.AppImage
             dist-artifacts/linux-installers/latest*.yml
-            dist-artifacts/linux-installers/app-update.yml
             dist-artifacts/**/release-manifest-*.json
             dist-artifacts/**/release-checksums-*.txt
+
 
       - name: Smoke verify published release assets
         uses: actions/github-script@v7
