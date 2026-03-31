@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import './direct-resource.css'
 import { FreshnessIndicator, useFreshnessState } from './freshness'
+import { CollapsibleInfoPanel } from './CollapsibleInfoPanel'
 import { SvcState } from './SvcState'
 
 import type { AwsConnection, NavigationFocus, WafScope } from '@shared/types'
@@ -599,28 +600,28 @@ export function DirectResourceConsole({
         </div>
       </div>
 
-      <section className="direct-section">
-        <div className="direct-section-head">
-          <div>
-            <span className="direct-pane-kicker">Example workflows</span>
-            <h3>When to use direct access</h3>
-          </div>
+      <CollapsibleInfoPanel title="When to use direct access" eyebrow="Example workflows" className="direct-section direct-info-panel">
+        <div className="info-card-grid">
+          <article className="info-card">
+            <div className="info-card__copy">
+              <strong>Known resource, limited list permissions</strong>
+              <p>Open a Lambda, ECS service, or secret directly when broad inventory listing is blocked but you already know the identifier.</p>
+            </div>
+          </article>
+          <article className="info-card">
+            <div className="info-card__copy">
+              <strong>Incident triage from an ARN or URL</strong>
+              <p>Paste the resource identifier from a ticket, alert, or audit finding and inspect the payload before jumping into the full console.</p>
+            </div>
+          </article>
+          <article className="info-card">
+            <div className="info-card__copy">
+              <strong>Fast handoff into a deeper workspace</strong>
+              <p>Use the routed next actions below to move from a one-off lookup into the main service console with focus applied.</p>
+            </div>
+          </article>
         </div>
-        <div className="direct-result-list">
-          <article className="direct-result-row">
-            <strong>Known resource, limited list permissions</strong>
-            <span>Open a Lambda, ECS service, or secret directly when broad inventory listing is blocked but you already know the identifier.</span>
-          </article>
-          <article className="direct-result-row">
-            <strong>Incident triage from an ARN or URL</strong>
-            <span>Paste the resource identifier from a ticket, alert, or audit finding and inspect the payload before jumping into the full console.</span>
-          </article>
-          <article className="direct-result-row">
-            <strong>Fast handoff into a deeper workspace</strong>
-            <span>Use the routed next actions below to move from a one-off lookup into the main service console with focus applied.</span>
-          </article>
-        </div>
-      </section>
+      </CollapsibleInfoPanel>
 
       {error && <SvcState variant="error" error={error} />}
 
@@ -734,25 +735,21 @@ export function DirectResourceConsole({
             </div>
           </section>
 
-          <section className="direct-section">
-            <div className="direct-section-head">
-              <div>
-                <span className="direct-pane-kicker">Next actions</span>
-                <h3>Continue in a service console</h3>
-              </div>
-            </div>
+          <CollapsibleInfoPanel title="Continue in a service console" eyebrow="Next actions" className="direct-section direct-info-panel">
             {suggestedLinks.length > 0 ? (
-              <div className="direct-result-list">
+              <div className="info-card-grid">
                 {suggestedLinks.map((link) => (
-                  <button
-                    key={`${link.label}:${link.focus.service}`}
-                    type="button"
-                    className="direct-result-row"
-                    onClick={() => onNavigate(link.focus)}
-                  >
-                    <strong>{link.label}</strong>
-                    <span>{link.description}</span>
-                  </button>
+                  <article key={`${link.label}:${link.focus.service}`} className="info-card info-card-action">
+                    <div className="info-card__copy">
+                      <strong>{link.label}</strong>
+                      <p>{link.description}</p>
+                    </div>
+                    <div className="button-row">
+                      <button type="button" className="accent" onClick={() => onNavigate(link.focus)}>
+                        Open
+                      </button>
+                    </div>
+                  </article>
                 ))}
               </div>
             ) : (
@@ -761,7 +758,7 @@ export function DirectResourceConsole({
                 message="Open a supported direct lookup to unlock a routed next action into the main console."
               />
             )}
-          </section>
+          </CollapsibleInfoPanel>
 
           <section className="direct-section">
             <div className="direct-section-head">
