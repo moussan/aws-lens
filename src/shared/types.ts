@@ -231,6 +231,35 @@ export type CallerIdentity = {
   userId: string
 }
 
+export type AppReleaseChannel = 'stable' | 'preview' | 'unknown'
+
+export type AppReleaseCheckStatus = 'idle' | 'checking' | 'ready' | 'error'
+
+export type AppReleaseMechanism = 'github-release-check' | 'electron-updater'
+
+export type AppUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export type AppReleaseBuildInfo = {
+  version: string
+  buildHash: string | null
+  channel: AppReleaseChannel
+}
+
+export type AppReleaseArtifactInfo = {
+  version: string | null
+  name: string | null
+  notes: string | null
+  publishedAt: string | null
+  url: string
+}
+
 export type AppReleaseInfo = {
   currentVersion: string
   latestVersion: string | null
@@ -238,6 +267,56 @@ export type AppReleaseInfo = {
   releaseUrl: string
   checkedAt: string | null
   error: string | null
+  checkStatus: AppReleaseCheckStatus
+  updateMechanism: AppReleaseMechanism
+  updateStatus: AppUpdateStatus
+  supportsAutoUpdate: boolean
+  canCheckForUpdates: boolean
+  canDownloadUpdate: boolean
+  canInstallUpdate: boolean
+  downloadProgressPercent: number | null
+  currentBuild: AppReleaseBuildInfo
+  latestRelease: AppReleaseArtifactInfo
+}
+
+export type EnvironmentToolId =
+  | 'aws-cli'
+  | 'session-manager-plugin'
+  | 'terraform'
+  | 'opentofu'
+  | 'kubectl'
+  | 'docker'
+
+export type EnvironmentToolStatus = 'available' | 'missing' | 'warning'
+
+export type EnvironmentCheckSeverity = 'info' | 'warning' | 'error'
+
+export type EnvironmentToolCheck = {
+  id: EnvironmentToolId
+  label: string
+  status: EnvironmentToolStatus
+  found: boolean
+  required: boolean
+  version: string
+  path: string
+  detail: string
+  remediation: string
+}
+
+export type EnvironmentPermissionCheck = {
+  id: string
+  label: string
+  status: 'ok' | 'warning' | 'error'
+  detail: string
+  remediation: string
+}
+
+export type EnvironmentHealthReport = {
+  checkedAt: string
+  overallSeverity: EnvironmentCheckSeverity
+  summary: string
+  tools: EnvironmentToolCheck[]
+  permissions: EnvironmentPermissionCheck[]
 }
 
 export type Ec2SsmStatus = 'managed-online' | 'managed-offline' | 'not-managed'

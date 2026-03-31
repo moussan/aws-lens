@@ -4243,6 +4243,13 @@ button.overview-tile.clickable.active strong {
   font-size: 1.35rem;
 }
 
+.rail-logo.active {
+  border-color: rgba(255, 170, 108, 0.7);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 221, 179, 0.16),
+    0 12px 26px rgba(10, 18, 30, 0.42);
+}
+
 .rail-divider {
   width: 100%;
   height: 1px;
@@ -4630,6 +4637,282 @@ button.overview-tile.clickable.active strong {
 
 .catalog-main-content.hidden {
   display: none;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.settings-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.05rem;
+  border-radius: 24px;
+  border: 1px solid rgba(147, 172, 203, 0.14);
+  background:
+    linear-gradient(180deg, rgba(17, 27, 41, 0.96), rgba(10, 17, 28, 0.94)),
+    radial-gradient(circle at top right, rgba(255, 153, 84, 0.1), transparent 30%);
+  box-shadow: 0 24px 60px rgba(6, 12, 20, 0.34);
+}
+
+.settings-page-header h2,
+.settings-panel-card h3 {
+  margin: 0.2rem 0 0;
+  color: #f3f7fc;
+  letter-spacing: -0.03em;
+}
+
+.settings-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.settings-panel-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1rem 1.05rem;
+  border-radius: 20px;
+  border: 1px solid rgba(132, 156, 188, 0.14);
+  background:
+    linear-gradient(180deg, rgba(16, 24, 36, 0.96), rgba(8, 14, 22, 0.96)),
+    radial-gradient(circle at top left, rgba(91, 154, 255, 0.08), transparent 28%);
+  box-shadow: 0 18px 40px rgba(6, 12, 20, 0.28);
+}
+
+.settings-panel-card-wide {
+  grid-column: 1 / -1;
+}
+
+.settings-panel-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.settings-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0.1rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #e9f3ff;
+  background: rgba(30, 48, 70, 0.86);
+}
+
+.settings-status-pill-stable {
+  background: rgba(28, 74, 54, 0.78);
+  border-color: rgba(100, 206, 151, 0.24);
+}
+
+.settings-status-pill-preview {
+  background: rgba(108, 54, 18, 0.82);
+  border-color: rgba(255, 167, 96, 0.32);
+}
+
+.settings-status-pill-unknown {
+  background: rgba(48, 58, 71, 0.82);
+  border-color: rgba(164, 178, 197, 0.2);
+}
+
+.settings-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.settings-info-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.settings-info-row span {
+  font-size: 0.74rem;
+  color: #90a4bb;
+}
+
+.settings-info-row strong {
+  color: #f3f7fc;
+  font-size: 0.94rem;
+  word-break: break-word;
+}
+
+.settings-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.settings-action-row button {
+  min-height: 40px;
+  border-radius: 10px;
+}
+
+.settings-release-notes {
+  min-height: 140px;
+  border-radius: 16px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.78);
+  padding: 0.9rem 1rem;
+}
+
+.settings-release-notes p,
+.settings-release-notes pre {
+  margin: 0;
+  color: #dbe7f3;
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.settings-environment-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.72);
+}
+
+.settings-environment-summary strong,
+.settings-environment-summary span {
+  color: #dbe7f3;
+}
+
+.settings-environment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.settings-environment-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.settings-environment-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.72);
+}
+
+.settings-environment-row strong {
+  color: #f3f7fc;
+}
+
+.settings-environment-row p,
+.settings-environment-row small {
+  margin: 0.2rem 0 0;
+  color: #a8b8ca;
+  display: block;
+}
+
+.settings-environment-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.45rem;
+  min-width: 110px;
+}
+
+.settings-environment-meta code {
+  color: #dbe7f3;
+  font-size: 0.75rem;
+  text-align: right;
+  word-break: break-word;
+}
+
+.environment-onboarding-shell {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  margin-bottom: 0.9rem;
+}
+
+.environment-onboarding-backdrop {
+  position: absolute;
+  inset: 0;
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(7, 10, 15, 0.9), rgba(7, 10, 15, 0.78)),
+    radial-gradient(circle at top left, rgba(223, 105, 42, 0.16), transparent 34%);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 28px 68px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(18px);
+}
+
+.environment-onboarding-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1.15rem;
+}
+
+.environment-onboarding-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.environment-onboarding-hero h2 {
+  margin: 0.2rem 0 0.35rem;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  letter-spacing: -0.04em;
+  font-size: clamp(1.45rem, 2.4vw, 2.1rem);
+}
+
+.environment-onboarding-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(143, 166, 192, 0.14);
+  background: rgba(6, 12, 19, 0.72);
+}
+
+.environment-onboarding-summary strong,
+.environment-onboarding-summary span {
+  color: #deebf7;
+}
+
+.environment-onboarding-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.environment-onboarding-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.environment-onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
 }
 
 .page-refresh-overlay {
@@ -6620,5 +6903,32 @@ textarea {
 
   .profile-catalog-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1040px) {
+  .settings-info-grid,
+  .settings-environment-grid,
+  .environment-onboarding-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .settings-environment-row {
+    flex-direction: column;
+  }
+
+  .settings-environment-meta {
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  .environment-onboarding-hero {
+    flex-direction: column;
+  }
+
+  .environment-onboarding-actions button {
+    width: 100%;
   }
 }

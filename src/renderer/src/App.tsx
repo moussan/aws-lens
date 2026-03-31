@@ -4,6 +4,7 @@ import appLogoUrl from '../../../assets/aws-lens-logo.png'
 import type {
   AppReleaseInfo,
   ComparisonRequest,
+  EnvironmentHealthReport,
   EnterpriseAccessMode,
   EnterpriseAuditEvent,
   NavigationFocus,
@@ -13,15 +14,19 @@ import type {
   TokenizedFocus
 } from '@shared/types'
 import {
+  checkForAppUpdates,
   chooseAndImportConfig,
   closeAwsTerminal,
   deleteProfile,
+  downloadAppUpdate,
   exportDiagnosticsBundle,
   exportEnterpriseAuditEvents,
   getAppReleaseInfo,
+  getEnvironmentHealth,
   getEnterpriseSettings,
   invalidateAllPageCaches,
   invalidatePageCache,
+  installAppUpdate,
   listEnterpriseAuditEvents,
   listServices,
   openExternalUrl,
@@ -65,7 +70,7 @@ import { VpcWorkspace } from './VpcWorkspace'
 import { WafConsole } from './WafConsole'
 import { WorkspaceApp } from './WorkspaceApp'
 
-type Screen = 'profiles' | 'direct-access' | ServiceId
+type Screen = 'profiles' | 'settings' | 'direct-access' | ServiceId
 type PendingTerminalCommand = { id: number; command: string } | null
 type RefreshState = { screen: Screen; sawPending: boolean } | null
 type FabMode = 'closed' | 'menu' | 'credentials'
@@ -77,6 +82,7 @@ type AuditSummary = {
   failed: number
 }
 const PINNED_SERVICES_STORAGE_KEY = 'aws-lens:pinned-services'
+const ENVIRONMENT_ONBOARDING_STORAGE_KEY = 'aws-lens:environment-onboarding-v1'
 type FocusMap = Partial<Record<NavigationFocus['service'], TokenizedFocus>>
 const NAV_HIDDEN_SERVICE_IDS = new Set<ServiceId>(['overview', 'session-hub', 'compare'])
 
@@ -349,6 +355,10 @@ export function App() {
   const [credSaving, setCredSaving] = useState(false)
   const [credError, setCredError] = useState('')
   const [profileActionMsg, setProfileActionMsg] = useState('')
+  const [settingsMessage, setSettingsMessage] = useState('')
+  const [environmentHealth, setEnvironmentHealth] = useState<EnvironmentHealthReport | null>(null)
+  const [environmentBusy, setEnvironmentBusy] = useState(false)
+  const [showEnvironmentOnboarding, setShowEnvironmentOnboarding] = useState(false)
   const [globalWarning, setGlobalWarning] = useState('')
   const [focusMap, setFocusMap] = useState<FocusMap>({})
   const [compareSeed, setCompareSeed] = useState<CompareSeed>(null)
@@ -381,6 +391,49 @@ export function App() {
       // Ignore audit hydration failures in the catalog shell.
     })
   }, [])
+
+  useEffect(() => {
+    if (screen !== 'settings') {
+      return
+    }
+
+    if (environmentHealth || environmentBusy) {
+      return
+    }
+
+    setEnvironmentBusy(true)
+    void getEnvironmentHealth()
+      .then(setEnvironmentHealth)
+      .catch(() => {
+        // Ignore environment validation hydration failures in the shell.
+      })
+      .finally(() => setEnvironmentBusy(false))
+  }, [environmentBusy, environmentHealth, screen])
+
+  useEffect(() => {
+    try {
+      const dismissed = window.localStorage.getItem(ENVIRONMENT_ONBOARDING_STORAGE_KEY)
+      if (!dismissed) {
+        setShowEnvironmentOnboarding(true)
+      }
+    } catch {
+      setShowEnvironmentOnboarding(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!showEnvironmentOnboarding || environmentHealth || environmentBusy) {
+      return
+    }
+
+    setEnvironmentBusy(true)
+    void getEnvironmentHealth()
+      .then(setEnvironmentHealth)
+      .catch(() => {
+        // Ignore onboarding hydration failures and let manual refresh handle retries.
+      })
+      .finally(() => setEnvironmentBusy(false))
+  }, [environmentBusy, environmentHealth, showEnvironmentOnboarding])
 
   useEffect(() => {
     if (screen !== 'profiles') {
@@ -489,6 +542,31 @@ export function App() {
     ? `${connectionState.connection.sessionId}:${connectionState.connection.region}`
     : 'disconnected'
   const versionLabel = releaseInfo?.currentVersion ?? ''
+  const releaseStateLabel = !releaseInfo?.supportsAutoUpdate
+    ? 'Unavailable in dev build'
+    : releaseInfo?.updateStatus === 'available'
+      ? 'Update available'
+      : releaseInfo?.updateStatus === 'downloaded'
+        ? 'Ready to install'
+        : releaseInfo?.updateStatus === 'downloading'
+          ? 'Downloading'
+          : releaseInfo?.updateStatus === 'error'
+            ? 'Needs attention'
+            : 'Up to date'
+  const releaseStateTone = !releaseInfo?.supportsAutoUpdate
+    ? 'settings-status-pill-unknown'
+    : releaseInfo?.updateStatus === 'available' || releaseInfo?.updateStatus === 'downloaded' || releaseInfo?.updateStatus === 'error'
+      ? 'settings-status-pill-preview'
+      : 'settings-status-pill-stable'
+  const environmentIssueCount = useMemo(() => {
+    if (!environmentHealth) {
+      return 0
+    }
+
+    const toolIssues = environmentHealth.tools.filter((tool) => tool.status !== 'available').length
+    const permissionIssues = environmentHealth.permissions.filter((item) => item.status !== 'ok').length
+    return toolIssues + permissionIssues
+  }, [environmentHealth])
 
   function togglePinnedService(serviceId: ServiceId) {
     setPinnedServiceIds((current) =>
@@ -810,6 +888,74 @@ export function App() {
     }
   }
 
+  async function handleCheckForUpdates(): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextInfo = await checkForAppUpdates()
+      setReleaseInfo(nextInfo)
+      setSettingsMessage(
+        nextInfo.updateAvailable
+          ? `Update v${nextInfo.latestVersion ?? ''} is available on the ${nextInfo.currentBuild.channel} channel.`
+          : `No newer update is currently available for the ${nextInfo.currentBuild.channel} channel.`
+      )
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleDownloadUpdate(): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextInfo = await downloadAppUpdate()
+      setReleaseInfo(nextInfo)
+      setSettingsMessage(
+        nextInfo.updateStatus === 'downloaded'
+          ? `Update v${nextInfo.latestVersion ?? ''} is downloaded and ready to install.`
+          : `Downloading update v${nextInfo.latestVersion ?? ''}.`
+      )
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleInstallUpdate(): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextInfo = await installAppUpdate()
+      setReleaseInfo(nextInfo)
+      setSettingsMessage('Closing AWS Lens to install the downloaded update.')
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleRefreshEnvironmentHealth(): Promise<void> {
+    setEnvironmentBusy(true)
+    setSettingsMessage('')
+    try {
+      const report = await getEnvironmentHealth()
+      setEnvironmentHealth(report)
+      setSettingsMessage(report.summary)
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setEnvironmentBusy(false)
+    }
+  }
+
+  function dismissEnvironmentOnboarding(nextScreen?: Screen): void {
+    try {
+      window.localStorage.setItem(ENVIRONMENT_ONBOARDING_STORAGE_KEY, 'dismissed')
+    } catch {
+      // Ignore persistence failures and still continue into the app shell.
+    }
+
+    setShowEnvironmentOnboarding(false)
+    if (nextScreen) {
+      setScreen(nextScreen)
+    }
+  }
+
   function renderScreenContent(targetScreen: Screen): React.ReactNode {
     const targetService = services.find((service) => service.id === targetScreen)
 
@@ -1047,6 +1193,147 @@ export function App() {
       )
     }
 
+    if (targetScreen === 'settings') {
+      const buildChannel = releaseInfo?.currentBuild.channel ?? 'unknown'
+      const latestRelease = releaseInfo?.latestRelease
+      const releaseNotesPreview = latestRelease?.notes?.trim() ?? ''
+
+      return (
+        <section className="settings-page">
+          <div className="settings-page-header">
+            <div>
+              <div className="eyebrow">Settings</div>
+              <h2>App Info</h2>
+              <p className="hero-path">Application metadata, release channel state, and update actions will live here as the settings surface grows.</p>
+            </div>
+          </div>
+
+          {settingsMessage && <div className="success-banner">{settingsMessage}</div>}
+
+          <div className="settings-panel-grid">
+            <section className="settings-panel-card">
+              <div className="settings-panel-card__header">
+                <div>
+                  <div className="eyebrow">Build</div>
+                  <h3>Current build</h3>
+                </div>
+                <span className={`settings-status-pill settings-status-pill-${buildChannel}`}>{buildChannel}</span>
+              </div>
+              <div className="settings-info-grid">
+                <div className="settings-info-row"><span>Version</span><strong>{releaseInfo?.currentVersion ? `v${releaseInfo.currentVersion}` : 'Unknown'}</strong></div>
+                <div className="settings-info-row"><span>Build hash</span><strong>{releaseInfo?.currentBuild.buildHash ?? 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Updater</span><strong>{releaseInfo?.supportsAutoUpdate ? 'Enabled in packaged app' : 'Available in packaged app only'}</strong></div>
+                <div className="settings-info-row"><span>Check status</span><strong>{releaseInfo?.checkStatus ?? 'idle'}</strong></div>
+                <div className="settings-info-row"><span>Update status</span><strong>{releaseInfo?.updateStatus ?? 'idle'}</strong></div>
+                <div className="settings-info-row"><span>Last checked</span><strong>{releaseInfo?.checkedAt ? new Date(releaseInfo.checkedAt).toLocaleString() : releaseInfo?.supportsAutoUpdate ? 'Not checked yet' : 'Disabled in dev build'}</strong></div>
+              </div>
+            </section>
+
+            <section className="settings-panel-card">
+              <div className="settings-panel-card__header">
+                <div>
+                  <div className="eyebrow">Updates</div>
+                  <h3>Release state</h3>
+                </div>
+                <span className={`settings-status-pill ${releaseStateTone}`}>
+                  {releaseStateLabel}
+                </span>
+              </div>
+              <div className="settings-info-grid">
+                <div className="settings-info-row"><span>Latest version</span><strong>{releaseInfo?.latestVersion ? `v${releaseInfo.latestVersion}` : 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Release name</span><strong>{latestRelease?.name ?? 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Published</span><strong>{latestRelease?.publishedAt ? new Date(latestRelease.publishedAt).toLocaleString() : 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Download progress</span><strong>{typeof releaseInfo?.downloadProgressPercent === 'number' ? `${Math.round(releaseInfo.downloadProgressPercent)}%` : 'Not downloading'}</strong></div>
+              </div>
+              <div className="settings-action-row">
+                <button type="button" className="accent" disabled={!releaseInfo?.canCheckForUpdates} onClick={() => void handleCheckForUpdates()}>
+                  {releaseInfo?.supportsAutoUpdate ? (releaseInfo?.checkStatus === 'checking' ? 'Checking...' : 'Check for updates') : 'Package app to enable'}
+                </button>
+                <button type="button" disabled={!releaseInfo?.canDownloadUpdate} onClick={() => void handleDownloadUpdate()}>
+                  {releaseInfo?.updateStatus === 'downloading' ? 'Downloading...' : 'Download update'}
+                </button>
+                <button type="button" disabled={!releaseInfo?.canInstallUpdate} onClick={() => void handleInstallUpdate()}>
+                  Install update
+                </button>
+                <button type="button" onClick={() => void openExternalUrl(releaseInfo?.latestRelease.url || releaseInfo?.releaseUrl || 'https://github.com/BoraKostem/AWS-Lens/releases/')}>
+                  Open release page
+                </button>
+              </div>
+              {releaseInfo?.error && <div className="error-banner">{releaseInfo.error}</div>}
+            </section>
+          </div>
+
+          <section className="settings-panel-card settings-panel-card-wide">
+            <div className="settings-panel-card__header">
+              <div>
+                <div className="eyebrow">Environment</div>
+                <h3>Machine validation</h3>
+              </div>
+              <div className="settings-action-row">
+                <button type="button" className="accent" disabled={environmentBusy} onClick={() => void handleRefreshEnvironmentHealth()}>
+                  {environmentBusy ? 'Refreshing...' : 'Refresh environment'}
+                </button>
+              </div>
+            </div>
+            <div className="settings-environment-summary">
+              <strong>{environmentHealth?.summary ?? 'Environment checks have not run yet.'}</strong>
+              <span>Status: {environmentHealth?.overallSeverity ?? 'idle'}</span>
+              <span>Checked: {environmentHealth?.checkedAt ? new Date(environmentHealth.checkedAt).toLocaleString() : 'Not checked yet'}</span>
+            </div>
+            <div className="settings-environment-grid">
+              <div className="settings-environment-section">
+                <div className="eyebrow">Tooling</div>
+                {environmentHealth?.tools.map((tool) => (
+                  <div key={tool.id} className="settings-environment-row">
+                    <div>
+                      <strong>{tool.label}</strong>
+                      <p>{tool.detail}</p>
+                      {tool.remediation && <small>{tool.remediation}</small>}
+                    </div>
+                    <div className="settings-environment-meta">
+                      <span className={`settings-status-pill settings-status-pill-${tool.status === 'available' ? 'stable' : tool.status === 'missing' ? 'preview' : 'unknown'}`}>{tool.status}</span>
+                      <code>{tool.version || 'not found'}</code>
+                    </div>
+                  </div>
+                ))}
+                {!environmentHealth && !environmentBusy && <div className="settings-release-notes"><p>No environment report loaded yet.</p></div>}
+              </div>
+              <div className="settings-environment-section">
+                <div className="eyebrow">Permissions</div>
+                {environmentHealth?.permissions.map((item) => (
+                  <div key={item.id} className="settings-environment-row">
+                    <div>
+                      <strong>{item.label}</strong>
+                      <p>{item.detail}</p>
+                      {item.remediation && <small>{item.remediation}</small>}
+                    </div>
+                    <div className="settings-environment-meta">
+                      <span className={`settings-status-pill settings-status-pill-${item.status === 'ok' ? 'stable' : item.status === 'error' ? 'preview' : 'unknown'}`}>{item.status}</span>
+                    </div>
+                  </div>
+                ))}
+                {!environmentHealth && !environmentBusy && <div className="settings-release-notes"><p>No permission report loaded yet.</p></div>}
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-panel-card settings-panel-card-wide">
+            <div className="settings-panel-card__header">
+              <div>
+                <div className="eyebrow">Release Notes</div>
+                <h3>Latest published notes</h3>
+              </div>
+            </div>
+            <div className="settings-release-notes">
+              {releaseNotesPreview
+                ? <pre>{releaseNotesPreview}</pre>
+                : <p>No release notes are available yet for the currently resolved release metadata.</p>}
+            </div>
+          </section>
+        </section>
+      )
+    }
+
     if (targetScreen === 'overview') {
       return <OverviewConsole state={connectionState} embedded refreshNonce={pageRefreshNonceByScreen['overview'] ?? 0} onNavigate={(target) => {
         if (IMPLEMENTED_SCREENS.has(target)) setScreen(target as Screen)
@@ -1174,7 +1461,7 @@ export function App() {
     <div className="catalog-shell-frame">
       <div className={`catalog-shell ${navOpen ? '' : 'nav-collapsed'}`}>
       <aside className="profile-rail">
-        <button type="button" className="rail-logo" onClick={() => setScreen('profiles')} aria-label="AWS Lens home">
+        <button type="button" className={`rail-logo ${screen === 'settings' ? 'active' : ''}`} onClick={() => setScreen('settings')} aria-label="Open settings">
           <img src={appLogoUrl} alt="AWS Lens" style={{ width: 28, height: 28, borderRadius: 6 }} />
         </button>
         <div className="rail-divider" />
@@ -1349,6 +1636,94 @@ export function App() {
       <main className="catalog-main">
         {(globalWarning || catalogError || connectionState.error) && <div className="error-banner">{globalWarning || catalogError || connectionState.error}</div>}
         {screen === 'profiles' && profileActionMsg && <div className="success-banner">{profileActionMsg}</div>}
+        {showEnvironmentOnboarding && (
+          <section className="environment-onboarding-shell">
+            <div className="environment-onboarding-backdrop" aria-hidden="true" />
+            <div className="environment-onboarding-card">
+              <div className="environment-onboarding-hero">
+                <div>
+                  <div className="eyebrow">First Run</div>
+                  <h2>Validate this machine before opening AWS workflows.</h2>
+                  <p className="hero-path">
+                    AWS Lens depends on local CLIs and a few writable paths. This check gives you a clean starting point before you connect profiles or run operator flows.
+                  </p>
+                </div>
+                <span className={`settings-status-pill settings-status-pill-${environmentHealth ? (environmentIssueCount > 0 ? 'preview' : 'stable') : 'unknown'}`}>
+                  {environmentHealth
+                    ? environmentIssueCount > 0
+                      ? `${environmentIssueCount} issue${environmentIssueCount === 1 ? '' : 's'} found`
+                      : 'Environment ready'
+                    : environmentBusy
+                      ? 'Checking environment'
+                      : 'Check pending'}
+                </span>
+              </div>
+
+              <div className="environment-onboarding-summary">
+                <strong>{environmentHealth?.summary ?? 'Running environment checks for this machine.'}</strong>
+                <span>Status: {environmentHealth?.overallSeverity ?? (environmentBusy ? 'checking' : 'idle')}</span>
+                <span>Checked: {environmentHealth?.checkedAt ? new Date(environmentHealth.checkedAt).toLocaleString() : environmentBusy ? 'Running now' : 'Not checked yet'}</span>
+              </div>
+
+              <div className="environment-onboarding-grid">
+                <section className="environment-onboarding-section">
+                  <div className="eyebrow">Tooling</div>
+                  {environmentHealth?.tools.map((tool) => (
+                    <div key={tool.id} className="settings-environment-row">
+                      <div>
+                        <strong>{tool.label}</strong>
+                        <p>{tool.detail}</p>
+                        {tool.remediation && <small>{tool.remediation}</small>}
+                      </div>
+                      <div className="settings-environment-meta">
+                        <span className={`settings-status-pill settings-status-pill-${tool.status === 'available' ? 'stable' : tool.status === 'missing' ? 'preview' : 'unknown'}`}>{tool.status}</span>
+                        <code>{tool.version || 'not found'}</code>
+                      </div>
+                    </div>
+                  ))}
+                  {!environmentHealth && (
+                    <div className="settings-release-notes">
+                      <p>{environmentBusy ? 'Inspecting installed CLIs and local dependencies.' : 'No tooling report loaded yet.'}</p>
+                    </div>
+                  )}
+                </section>
+
+                <section className="environment-onboarding-section">
+                  <div className="eyebrow">Permissions</div>
+                  {environmentHealth?.permissions.map((item) => (
+                    <div key={item.id} className="settings-environment-row">
+                      <div>
+                        <strong>{item.label}</strong>
+                        <p>{item.detail}</p>
+                        {item.remediation && <small>{item.remediation}</small>}
+                      </div>
+                      <div className="settings-environment-meta">
+                        <span className={`settings-status-pill settings-status-pill-${item.status === 'ok' ? 'stable' : item.status === 'error' ? 'preview' : 'unknown'}`}>{item.status}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {!environmentHealth && (
+                    <div className="settings-release-notes">
+                      <p>{environmentBusy ? 'Checking file-system access for local AWS Lens state.' : 'No permission report loaded yet.'}</p>
+                    </div>
+                  )}
+                </section>
+              </div>
+
+              <div className="environment-onboarding-actions">
+                <button type="button" className="accent" disabled={environmentBusy} onClick={() => void handleRefreshEnvironmentHealth()}>
+                  {environmentBusy ? 'Refreshing...' : 'Run checks again'}
+                </button>
+                <button type="button" onClick={() => dismissEnvironmentOnboarding('settings')}>
+                  Open settings
+                </button>
+                <button type="button" onClick={() => dismissEnvironmentOnboarding()}>
+                  Continue to app
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
         {visitedScreens.map((visitedScreen) => {
           const shouldSoftRefresh = SOFT_REFRESH_SCREENS.has(visitedScreen)
           const sectionKey = shouldSoftRefresh

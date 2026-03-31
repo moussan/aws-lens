@@ -1,0 +1,280 @@
+import { execFile } from 'node:child_process'
+import { access, constants } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+
+import type {
+  EnvironmentCheckSeverity,
+  EnvironmentHealthReport,
+  EnvironmentPermissionCheck,
+  EnvironmentToolCheck,
+  EnvironmentToolId
+} from '@shared/types'
+import { detectTerraformCli } from './terraform'
+
+type ToolProbeSpec = {
+  id: EnvironmentToolId
+  label: string
+  required: boolean
+  commands: string[]
+  versionArgs: string[]
+  versionPattern: RegExp
+  remediation: string
+  detailWhenMissing: string
+}
+
+const TOOL_SPECS: ToolProbeSpec[] = [
+  {
+    id: 'aws-cli',
+    label: 'AWS CLI',
+    required: true,
+    commands: process.platform === 'win32' ? ['aws.exe', 'aws'] : ['aws'],
+    versionArgs: ['--version'],
+    versionPattern: /aws-cli\/([^\s]+)/i,
+    remediation: 'Install AWS CLI v2 and ensure the `aws` command is available on your PATH.',
+    detailWhenMissing: 'AWS CLI is required for session flows, shell-based integrations, and several operator actions.'
+  },
+  {
+    id: 'session-manager-plugin',
+    label: 'Session Manager Plugin',
+    required: false,
+    commands: process.platform === 'win32' ? ['session-manager-plugin.exe', 'session-manager-plugin'] : ['session-manager-plugin'],
+    versionArgs: ['--version'],
+    versionPattern: /([\d.]+)/,
+    remediation: 'Install the AWS Session Manager Plugin if you want shell and port-forwarding flows from the app.',
+    detailWhenMissing: 'SSM shell launch flows depend on the Session Manager Plugin.'
+  },
+  {
+    id: 'kubectl',
+    label: 'kubectl',
+    required: false,
+    commands: process.platform === 'win32' ? ['kubectl.exe', 'kubectl'] : ['kubectl'],
+    versionArgs: ['version', '--client', '--output=json'],
+    versionPattern: /"gitVersion"\s*:\s*"v?([^"]+)"/i,
+    remediation: 'Install kubectl if you want EKS shell, observability, and workload inspection workflows.',
+    detailWhenMissing: 'EKS deep-dive workflows and kubectl-backed diagnostics will stay unavailable.'
+  },
+  {
+    id: 'docker',
+    label: 'Docker',
+    required: false,
+    commands: process.platform === 'win32' ? ['docker.exe', 'docker'] : ['docker'],
+    versionArgs: ['--version'],
+    versionPattern: /Docker version\s+([^\s,]+)/i,
+    remediation: 'Install Docker Desktop or another Docker runtime if you want ECR login, pull, and push flows.',
+    detailWhenMissing: 'ECR image pull and push actions rely on a local Docker runtime.'
+  }
+]
+
+function summarizeOutput(stdout: string, stderr: string): string {
+  return `${stdout}\n${stderr}`.trim()
+}
+
+function probeCommand(command: string, args: string[]): Promise<{ found: boolean; path: string; output: string }> {
+  return new Promise((resolve) => {
+    execFile(command, args, { timeout: 12000, windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        resolve({ found: false, path: '', output: '' })
+        return
+      }
+
+      resolve({
+        found: true,
+        path: command,
+        output: summarizeOutput(stdout, stderr)
+      })
+    })
+  })
+}
+
+async function detectTool(spec: ToolProbeSpec): Promise<EnvironmentToolCheck> {
+  for (const command of spec.commands) {
+    const result = await probeCommand(command, spec.versionArgs)
+    if (!result.found) {
+      continue
+    }
+
+    const versionMatch = result.output.match(spec.versionPattern)
+    const version = versionMatch?.[1] ?? result.output.slice(0, 80)
+
+    return {
+      id: spec.id,
+      label: spec.label,
+      status: 'available',
+      found: true,
+      required: spec.required,
+      version,
+      path: result.path,
+      detail: `${spec.label} is available on this machine.`,
+      remediation: ''
+    }
+  }
+
+  return {
+    id: spec.id,
+    label: spec.label,
+    status: spec.required ? 'missing' : 'warning',
+    found: false,
+    required: spec.required,
+    version: '',
+    path: '',
+    detail: spec.detailWhenMissing,
+    remediation: spec.remediation
+  }
+}
+
+async function detectTerraformFamily(): Promise<EnvironmentToolCheck[]> {
+  const cliInfo = await detectTerraformCli()
+
+  const terraformTool: EnvironmentToolCheck = {
+    id: 'terraform',
+    label: 'Terraform',
+    status: 'warning',
+    found: false,
+    required: false,
+    version: '',
+    path: '',
+    detail: 'Terraform CLI is not the currently selected infrastructure CLI.',
+    remediation: 'Install Terraform if you need parity with Terraform-native projects.'
+  }
+
+  const openTofuTool: EnvironmentToolCheck = {
+    id: 'opentofu',
+    label: 'OpenTofu',
+    status: 'warning',
+    found: false,
+    required: false,
+    version: '',
+    path: '',
+    detail: 'OpenTofu CLI is not currently available on this machine.',
+    remediation: 'Install OpenTofu if you want an open-source Terraform-compatible workflow.'
+  }
+
+  for (const option of cliInfo.available) {
+    if (option.kind === 'terraform') {
+      terraformTool.found = true
+      terraformTool.status = 'available'
+      terraformTool.version = option.version
+      terraformTool.path = option.path
+      terraformTool.detail = cliInfo.kind === 'terraform'
+        ? 'Terraform is available and selected as the active infrastructure CLI.'
+        : 'Terraform is installed and can be selected as the active infrastructure CLI.'
+      terraformTool.remediation = ''
+    }
+
+    if (option.kind === 'opentofu') {
+      openTofuTool.found = true
+      openTofuTool.status = 'available'
+      openTofuTool.version = option.version
+      openTofuTool.path = option.path
+      openTofuTool.detail = cliInfo.kind === 'opentofu'
+        ? 'OpenTofu is available and selected as the active infrastructure CLI.'
+        : 'OpenTofu is installed and can be selected as the active infrastructure CLI.'
+      openTofuTool.remediation = ''
+    }
+  }
+
+  if (!terraformTool.found && !openTofuTool.found) {
+    terraformTool.status = 'missing'
+    terraformTool.required = true
+    terraformTool.detail = 'Neither Terraform nor OpenTofu is currently available on this machine.'
+    terraformTool.remediation = 'Install Terraform or OpenTofu and ensure the executable is reachable on your PATH.'
+  }
+
+  return [terraformTool, openTofuTool]
+}
+
+async function detectPermissions(): Promise<EnvironmentPermissionCheck[]> {
+  const tempPath = os.tmpdir()
+  const permissions: EnvironmentPermissionCheck[] = []
+
+  try {
+    await access(tempPath, constants.R_OK | constants.W_OK)
+    permissions.push({
+      id: 'temp-dir',
+      label: 'Temporary workspace access',
+      status: 'ok',
+      detail: `The app can read and write temporary files in ${tempPath}.`,
+      remediation: ''
+    })
+  } catch {
+    permissions.push({
+      id: 'temp-dir',
+      label: 'Temporary workspace access',
+      status: 'error',
+      detail: `The app cannot read and write temporary files in ${tempPath}.`,
+      remediation: 'Grant the app access to the system temp directory because SSH staging, diagnostics, and command helpers depend on it.'
+    })
+  }
+
+  const homeDir = process.env.USERPROFILE || process.env.HOME || os.homedir()
+  const awsConfigDir = path.join(homeDir, '.aws')
+
+  try {
+    await access(awsConfigDir, constants.R_OK)
+    permissions.push({
+      id: 'aws-config-dir',
+      label: 'AWS config directory access',
+      status: 'ok',
+      detail: `AWS config directory is readable at ${awsConfigDir}.`,
+      remediation: ''
+    })
+  } catch {
+    permissions.push({
+      id: 'aws-config-dir',
+      label: 'AWS config directory access',
+      status: 'warning',
+      detail: `AWS config directory is not readable at ${awsConfigDir}.`,
+      remediation: 'This is acceptable if you rely only on the app vault, but external AWS profiles and config import flows will be limited.'
+    })
+  }
+
+  return permissions
+}
+
+function overallSeverity(tools: EnvironmentToolCheck[], permissions: EnvironmentPermissionCheck[]): EnvironmentCheckSeverity {
+  if (tools.some((tool) => tool.required && !tool.found) || permissions.some((item) => item.status === 'error')) {
+    return 'error'
+  }
+
+  if (tools.some((tool) => tool.status === 'warning' || tool.status === 'missing') || permissions.some((item) => item.status === 'warning')) {
+    return 'warning'
+  }
+
+  return 'info'
+}
+
+function buildSummary(tools: EnvironmentToolCheck[], permissions: EnvironmentPermissionCheck[]): string {
+  const availableRequired = tools.filter((tool) => tool.required && tool.found).length
+  const missingRequired = tools.filter((tool) => tool.required && !tool.found).length
+  const optionalMissing = tools.filter((tool) => !tool.required && !tool.found).length
+  const permissionProblems = permissions.filter((item) => item.status !== 'ok').length
+
+  if (missingRequired > 0) {
+    return `${missingRequired} required dependency is missing. Core shell and infrastructure workflows are not fully ready.`
+  }
+
+  if (optionalMissing > 0 || permissionProblems > 0) {
+    return `${availableRequired} required dependencies are ready, but ${optionalMissing + permissionProblems} optional checks still need attention.`
+  }
+
+  return 'All required environment checks passed.'
+}
+
+export async function getEnvironmentHealthReport(): Promise<EnvironmentHealthReport> {
+  const [genericTools, terraformTools, permissions] = await Promise.all([
+    Promise.all(TOOL_SPECS.map((spec) => detectTool(spec))),
+    detectTerraformFamily(),
+    detectPermissions()
+  ])
+
+  const tools = [...genericTools, ...terraformTools]
+
+  return {
+    checkedAt: new Date().toISOString(),
+    overallSeverity: overallSeverity(tools, permissions),
+    summary: buildSummary(tools, permissions),
+    tools,
+    permissions
+  }
+}
