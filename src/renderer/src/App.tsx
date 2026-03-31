@@ -13,15 +13,18 @@ import type {
   TokenizedFocus
 } from '@shared/types'
 import {
+  checkForAppUpdates,
   chooseAndImportConfig,
   closeAwsTerminal,
   deleteProfile,
+  downloadAppUpdate,
   exportDiagnosticsBundle,
   exportEnterpriseAuditEvents,
   getAppReleaseInfo,
   getEnterpriseSettings,
   invalidateAllPageCaches,
   invalidatePageCache,
+  installAppUpdate,
   listEnterpriseAuditEvents,
   listServices,
   openExternalUrl,
@@ -65,7 +68,7 @@ import { VpcWorkspace } from './VpcWorkspace'
 import { WafConsole } from './WafConsole'
 import { WorkspaceApp } from './WorkspaceApp'
 
-type Screen = 'profiles' | 'direct-access' | ServiceId
+type Screen = 'profiles' | 'settings' | 'direct-access' | ServiceId
 type PendingTerminalCommand = { id: number; command: string } | null
 type RefreshState = { screen: Screen; sawPending: boolean } | null
 type FabMode = 'closed' | 'menu' | 'credentials'
@@ -349,6 +352,7 @@ export function App() {
   const [credSaving, setCredSaving] = useState(false)
   const [credError, setCredError] = useState('')
   const [profileActionMsg, setProfileActionMsg] = useState('')
+  const [settingsMessage, setSettingsMessage] = useState('')
   const [globalWarning, setGlobalWarning] = useState('')
   const [focusMap, setFocusMap] = useState<FocusMap>({})
   const [compareSeed, setCompareSeed] = useState<CompareSeed>(null)
@@ -810,6 +814,47 @@ export function App() {
     }
   }
 
+  async function handleCheckForUpdates(): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextInfo = await checkForAppUpdates()
+      setReleaseInfo(nextInfo)
+      setSettingsMessage(
+        nextInfo.updateAvailable
+          ? `Update v${nextInfo.latestVersion ?? ''} is available on the ${nextInfo.currentBuild.channel} channel.`
+          : `No newer update is currently available for the ${nextInfo.currentBuild.channel} channel.`
+      )
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleDownloadUpdate(): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextInfo = await downloadAppUpdate()
+      setReleaseInfo(nextInfo)
+      setSettingsMessage(
+        nextInfo.updateStatus === 'downloaded'
+          ? `Update v${nextInfo.latestVersion ?? ''} is downloaded and ready to install.`
+          : `Downloading update v${nextInfo.latestVersion ?? ''}.`
+      )
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleInstallUpdate(): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextInfo = await installAppUpdate()
+      setReleaseInfo(nextInfo)
+      setSettingsMessage('Closing AWS Lens to install the downloaded update.')
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   function renderScreenContent(targetScreen: Screen): React.ReactNode {
     const targetService = services.find((service) => service.id === targetScreen)
 
@@ -1047,6 +1092,93 @@ export function App() {
       )
     }
 
+    if (targetScreen === 'settings') {
+      const buildChannel = releaseInfo?.currentBuild.channel ?? 'unknown'
+      const latestRelease = releaseInfo?.latestRelease
+      const releaseNotesPreview = latestRelease?.notes?.trim() ?? ''
+
+      return (
+        <section className="settings-page">
+          <div className="settings-page-header">
+            <div>
+              <div className="eyebrow">Settings</div>
+              <h2>App Info</h2>
+              <p className="hero-path">Application metadata, release channel state, and update actions will live here as the settings surface grows.</p>
+            </div>
+          </div>
+
+          {settingsMessage && <div className="success-banner">{settingsMessage}</div>}
+
+          <div className="settings-panel-grid">
+            <section className="settings-panel-card">
+              <div className="settings-panel-card__header">
+                <div>
+                  <div className="eyebrow">Build</div>
+                  <h3>Current build</h3>
+                </div>
+                <span className={`settings-status-pill settings-status-pill-${buildChannel}`}>{buildChannel}</span>
+              </div>
+              <div className="settings-info-grid">
+                <div className="settings-info-row"><span>Version</span><strong>{releaseInfo?.currentVersion ? `v${releaseInfo.currentVersion}` : 'Unknown'}</strong></div>
+                <div className="settings-info-row"><span>Build hash</span><strong>{releaseInfo?.currentBuild.buildHash ?? 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Updater</span><strong>{releaseInfo?.supportsAutoUpdate ? 'Enabled in packaged app' : 'GitHub release check fallback'}</strong></div>
+                <div className="settings-info-row"><span>Check status</span><strong>{releaseInfo?.checkStatus ?? 'idle'}</strong></div>
+                <div className="settings-info-row"><span>Update status</span><strong>{releaseInfo?.updateStatus ?? 'idle'}</strong></div>
+                <div className="settings-info-row"><span>Last checked</span><strong>{releaseInfo?.checkedAt ? new Date(releaseInfo.checkedAt).toLocaleString() : 'Not checked yet'}</strong></div>
+              </div>
+            </section>
+
+            <section className="settings-panel-card">
+              <div className="settings-panel-card__header">
+                <div>
+                  <div className="eyebrow">Updates</div>
+                  <h3>Release state</h3>
+                </div>
+                <span className={`settings-status-pill ${releaseInfo?.updateAvailable ? 'settings-status-pill-preview' : 'settings-status-pill-stable'}`}>
+                  {releaseInfo?.updateAvailable ? 'Update available' : 'Up to date'}
+                </span>
+              </div>
+              <div className="settings-info-grid">
+                <div className="settings-info-row"><span>Latest version</span><strong>{releaseInfo?.latestVersion ? `v${releaseInfo.latestVersion}` : 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Release name</span><strong>{latestRelease?.name ?? 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Published</span><strong>{latestRelease?.publishedAt ? new Date(latestRelease.publishedAt).toLocaleString() : 'Unavailable'}</strong></div>
+                <div className="settings-info-row"><span>Download progress</span><strong>{typeof releaseInfo?.downloadProgressPercent === 'number' ? `${Math.round(releaseInfo.downloadProgressPercent)}%` : 'Not downloading'}</strong></div>
+              </div>
+              <div className="settings-action-row">
+                <button type="button" className="accent" disabled={!releaseInfo?.canCheckForUpdates} onClick={() => void handleCheckForUpdates()}>
+                  {releaseInfo?.checkStatus === 'checking' ? 'Checking...' : 'Check for updates'}
+                </button>
+                <button type="button" disabled={!releaseInfo?.canDownloadUpdate} onClick={() => void handleDownloadUpdate()}>
+                  {releaseInfo?.updateStatus === 'downloading' ? 'Downloading...' : 'Download update'}
+                </button>
+                <button type="button" disabled={!releaseInfo?.canInstallUpdate} onClick={() => void handleInstallUpdate()}>
+                  Install update
+                </button>
+                <button type="button" onClick={() => void openExternalUrl(releaseInfo?.latestRelease.url || releaseInfo?.releaseUrl || 'https://github.com/BoraKostem/AWS-Lens/releases/')}>
+                  Open release page
+                </button>
+              </div>
+              {releaseInfo?.error && <div className="error-banner">{releaseInfo.error}</div>}
+            </section>
+          </div>
+
+          <section className="settings-panel-card settings-panel-card-wide">
+            <div className="settings-panel-card__header">
+              <div>
+                <div className="eyebrow">Release Notes</div>
+                <h3>Latest published notes</h3>
+              </div>
+            </div>
+            <div className="settings-release-notes">
+              {releaseNotesPreview
+                ? <pre>{releaseNotesPreview}</pre>
+                : <p>No release notes are available yet for the currently resolved release metadata.</p>}
+            </div>
+          </section>
+        </section>
+      )
+    }
+
     if (targetScreen === 'overview') {
       return <OverviewConsole state={connectionState} embedded refreshNonce={pageRefreshNonceByScreen['overview'] ?? 0} onNavigate={(target) => {
         if (IMPLEMENTED_SCREENS.has(target)) setScreen(target as Screen)
@@ -1174,7 +1306,7 @@ export function App() {
     <div className="catalog-shell-frame">
       <div className={`catalog-shell ${navOpen ? '' : 'nav-collapsed'}`}>
       <aside className="profile-rail">
-        <button type="button" className="rail-logo" onClick={() => setScreen('profiles')} aria-label="AWS Lens home">
+        <button type="button" className={`rail-logo ${screen === 'settings' ? 'active' : ''}`} onClick={() => setScreen('settings')} aria-label="Open settings">
           <img src={appLogoUrl} alt="AWS Lens" style={{ width: 28, height: 28, borderRadius: 6 }} />
         </button>
         <div className="rail-divider" />
