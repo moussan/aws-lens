@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import appLogoUrl from '../../../assets/aws-lens-logo.png'
 import type {
@@ -34,6 +34,7 @@ import {
   openExternalUrl,
   saveCredentials,
   setEnterpriseAccessMode,
+  updateAppSettings,
   useAwsActivity,
   useEnterpriseSettings,
   type CacheTag
@@ -369,9 +370,13 @@ export function App() {
   const [profileContextMenu, setProfileContextMenu] = useState<ProfileContextMenuState>(null)
   const [auditEvents, setAuditEvents] = useState<EnterpriseAuditEvent[]>([])
   const [enterpriseBusy, setEnterpriseBusy] = useState(false)
-  const connectionState = useAwsPageConnection('us-east-1')
+  const connectionState = useAwsPageConnection(
+    appSettings?.general.defaultRegion ?? 'us-east-1',
+    appSettings?.general.defaultProfileName ?? ''
+  )
   const awsActivity = useAwsActivity()
   const enterpriseSettings = useEnterpriseSettings()
+  const launchScreenInitializedRef = useRef(false)
 
   useEffect(() => {
     void listServices().then((loadedServices) => {
@@ -392,6 +397,33 @@ export function App() {
       // Ignore settings hydration failures until the settings surface is opened.
     })
   }, [])
+
+  useEffect(() => {
+    if (!appSettings || launchScreenInitializedRef.current) {
+      return
+    }
+
+    const targetScreen = appSettings.general.launchScreen
+    if (targetScreen === 'profiles') {
+      launchScreenInitializedRef.current = true
+      return
+    }
+
+    if (targetScreen === 'settings' || targetScreen === 'session-hub' || targetScreen === 'terraform') {
+      launchScreenInitializedRef.current = true
+      setScreen(targetScreen)
+      return
+    }
+
+    if (targetScreen === 'overview') {
+      if (connectionState.profile || connectionState.activeSession || !appSettings.general.defaultProfileName) {
+        launchScreenInitializedRef.current = true
+        if (connectionState.profile || connectionState.activeSession) {
+          setScreen('overview')
+        }
+      }
+    }
+  }, [appSettings, connectionState.activeSession, connectionState.profile])
 
   useEffect(() => {
     void getEnterpriseSettings().catch(() => {
@@ -913,6 +945,17 @@ export function App() {
     }
   }
 
+  async function handleUpdateGeneralSettings(update: AppSettings['general']): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextSettings = await updateAppSettings({ general: update })
+      setAppSettings(nextSettings)
+      setSettingsMessage('Startup defaults saved.')
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function handleDownloadUpdate(): Promise<void> {
     setSettingsMessage('')
     try {
@@ -1207,12 +1250,15 @@ export function App() {
       return (
         <SettingsPage
           appSettings={appSettings}
+          profiles={connectionState.profiles}
+          regions={connectionState.regions}
           releaseInfo={releaseInfo}
           releaseStateLabel={releaseStateLabel}
           releaseStateTone={releaseStateTone}
           environmentHealth={environmentHealth}
           environmentBusy={environmentBusy}
           settingsMessage={settingsMessage}
+          onUpdateGeneralSettings={(update) => void handleUpdateGeneralSettings(update)}
           onCheckForUpdates={() => void handleCheckForUpdates()}
           onDownloadUpdate={() => void handleDownloadUpdate()}
           onInstallUpdate={() => void handleInstallUpdate()}

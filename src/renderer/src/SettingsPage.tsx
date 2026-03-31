@@ -1,19 +1,32 @@
-import type { AppReleaseInfo, AppSettings, EnvironmentHealthReport } from '@shared/types'
+import { useEffect, useState } from 'react'
+
+import type { AppReleaseInfo, AppSettings, AwsProfile, AwsRegionOption, EnvironmentHealthReport } from '@shared/types'
 
 type SettingsPageProps = {
   appSettings: AppSettings | null
+  profiles: AwsProfile[]
+  regions: AwsRegionOption[]
   releaseInfo: AppReleaseInfo | null
   releaseStateLabel: string
   releaseStateTone: string
   environmentHealth: EnvironmentHealthReport | null
   environmentBusy: boolean
   settingsMessage: string
+  onUpdateGeneralSettings: (update: AppSettings['general']) => void
   onCheckForUpdates: () => void
   onDownloadUpdate: () => void
   onInstallUpdate: () => void
   onOpenReleasePage: () => void
   onRefreshEnvironment: () => void
 }
+
+const GENERAL_LAUNCH_SCREEN_OPTIONS: Array<{ value: AppSettings['general']['launchScreen']; label: string }> = [
+  { value: 'profiles', label: 'Profile catalog' },
+  { value: 'settings', label: 'Settings' },
+  { value: 'session-hub', label: 'Session Hub' },
+  { value: 'terraform', label: 'Terraform' },
+  { value: 'overview', label: 'Overview' }
+]
 
 function summarizeValue(value: string, fallback: string): string {
   return value.trim() ? value : fallback
@@ -114,12 +127,15 @@ function SummaryCard({
 
 export function SettingsPage({
   appSettings,
+  profiles,
+  regions,
   releaseInfo,
   releaseStateLabel,
   releaseStateTone,
   environmentHealth,
   environmentBusy,
   settingsMessage,
+  onUpdateGeneralSettings,
   onCheckForUpdates,
   onDownloadUpdate,
   onInstallUpdate,
@@ -129,6 +145,19 @@ export function SettingsPage({
   const buildChannel = releaseInfo?.currentBuild.channel ?? 'unknown'
   const latestRelease = releaseInfo?.latestRelease
   const releaseNotesPreview = latestRelease?.notes?.trim() ?? ''
+  const [generalDraft, setGeneralDraft] = useState<AppSettings['general']>({
+    defaultProfileName: '',
+    defaultRegion: 'us-east-1',
+    launchScreen: 'profiles'
+  })
+
+  useEffect(() => {
+    if (!appSettings) {
+      return
+    }
+
+    setGeneralDraft(appSettings.general)
+  }, [appSettings])
 
   return (
     <section className="settings-page">
@@ -145,6 +174,64 @@ export function SettingsPage({
       </div>
 
       {settingsMessage && <div className="success-banner">{settingsMessage}</div>}
+
+      <section className="settings-panel-card settings-panel-card-wide">
+        <div className="settings-panel-card__header">
+          <div>
+            <div className="eyebrow">General</div>
+            <h3>Startup defaults</h3>
+          </div>
+        </div>
+        <div className="settings-general-form">
+          <label className="field compact">
+            <span>Default profile</span>
+            <select
+              value={generalDraft.defaultProfileName}
+              onChange={(event) => setGeneralDraft((current) => ({ ...current, defaultProfileName: event.target.value }))}
+              disabled={!appSettings}
+            >
+              <option value="">Follow manual selection</option>
+              {profiles.map((profile) => (
+                <option key={profile.name} value={profile.name}>{profile.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field compact">
+            <span>Default region</span>
+            <select
+              value={generalDraft.defaultRegion}
+              onChange={(event) => setGeneralDraft((current) => ({ ...current, defaultRegion: event.target.value }))}
+              disabled={!appSettings}
+            >
+              {regions.map((region) => (
+                <option key={region.id} value={region.id}>{region.id} · {region.name}</option>
+              ))}
+              {!regions.some((region) => region.id === generalDraft.defaultRegion) && (
+                <option value={generalDraft.defaultRegion}>{generalDraft.defaultRegion}</option>
+              )}
+            </select>
+          </label>
+
+          <label className="field compact">
+            <span>Launch screen</span>
+            <select
+              value={generalDraft.launchScreen}
+              onChange={(event) => setGeneralDraft((current) => ({ ...current, launchScreen: event.target.value as AppSettings['general']['launchScreen'] }))}
+              disabled={!appSettings}
+            >
+              {GENERAL_LAUNCH_SCREEN_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="settings-action-row">
+          <button type="button" className="accent" disabled={!appSettings} onClick={() => onUpdateGeneralSettings(generalDraft)}>
+            Save startup defaults
+          </button>
+        </div>
+      </section>
 
       <div className="settings-section-grid">
         <SummaryCard
