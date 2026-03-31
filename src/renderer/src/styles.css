@@ -4841,6 +4841,80 @@ button.overview-tile.clickable.active strong {
   word-break: break-word;
 }
 
+.environment-onboarding-shell {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  margin-bottom: 0.9rem;
+}
+
+.environment-onboarding-backdrop {
+  position: absolute;
+  inset: 0;
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(7, 10, 15, 0.9), rgba(7, 10, 15, 0.78)),
+    radial-gradient(circle at top left, rgba(223, 105, 42, 0.16), transparent 34%);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 28px 68px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(18px);
+}
+
+.environment-onboarding-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding: 1.15rem;
+}
+
+.environment-onboarding-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.environment-onboarding-hero h2 {
+  margin: 0.2rem 0 0.35rem;
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  letter-spacing: -0.04em;
+  font-size: clamp(1.45rem, 2.4vw, 2.1rem);
+}
+
+.environment-onboarding-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(143, 166, 192, 0.14);
+  background: rgba(6, 12, 19, 0.72);
+}
+
+.environment-onboarding-summary strong,
+.environment-onboarding-summary span {
+  color: #deebf7;
+}
+
+.environment-onboarding-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.environment-onboarding-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.environment-onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
 .page-refresh-overlay {
   position: absolute;
   inset: 0;
@@ -6829,5 +6903,32 @@ textarea {
 
   .profile-catalog-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1040px) {
+  .settings-info-grid,
+  .settings-environment-grid,
+  .environment-onboarding-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .settings-environment-row {
+    flex-direction: column;
+  }
+
+  .settings-environment-meta {
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  .environment-onboarding-hero {
+    flex-direction: column;
+  }
+
+  .environment-onboarding-actions button {
+    width: 100%;
   }
 }

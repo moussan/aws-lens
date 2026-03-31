@@ -82,6 +82,7 @@ type AuditSummary = {
   failed: number
 }
 const PINNED_SERVICES_STORAGE_KEY = 'aws-lens:pinned-services'
+const ENVIRONMENT_ONBOARDING_STORAGE_KEY = 'aws-lens:environment-onboarding-v1'
 type FocusMap = Partial<Record<NavigationFocus['service'], TokenizedFocus>>
 const NAV_HIDDEN_SERVICE_IDS = new Set<ServiceId>(['overview', 'session-hub', 'compare'])
 
@@ -357,6 +358,7 @@ export function App() {
   const [settingsMessage, setSettingsMessage] = useState('')
   const [environmentHealth, setEnvironmentHealth] = useState<EnvironmentHealthReport | null>(null)
   const [environmentBusy, setEnvironmentBusy] = useState(false)
+  const [showEnvironmentOnboarding, setShowEnvironmentOnboarding] = useState(false)
   const [globalWarning, setGlobalWarning] = useState('')
   const [focusMap, setFocusMap] = useState<FocusMap>({})
   const [compareSeed, setCompareSeed] = useState<CompareSeed>(null)
@@ -407,6 +409,31 @@ export function App() {
       })
       .finally(() => setEnvironmentBusy(false))
   }, [environmentBusy, environmentHealth, screen])
+
+  useEffect(() => {
+    try {
+      const dismissed = window.localStorage.getItem(ENVIRONMENT_ONBOARDING_STORAGE_KEY)
+      if (!dismissed) {
+        setShowEnvironmentOnboarding(true)
+      }
+    } catch {
+      setShowEnvironmentOnboarding(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!showEnvironmentOnboarding || environmentHealth || environmentBusy) {
+      return
+    }
+
+    setEnvironmentBusy(true)
+    void getEnvironmentHealth()
+      .then(setEnvironmentHealth)
+      .catch(() => {
+        // Ignore onboarding hydration failures and let manual refresh handle retries.
+      })
+      .finally(() => setEnvironmentBusy(false))
+  }, [environmentBusy, environmentHealth, showEnvironmentOnboarding])
 
   useEffect(() => {
     if (screen !== 'profiles') {
@@ -531,6 +558,15 @@ export function App() {
     : releaseInfo?.updateStatus === 'available' || releaseInfo?.updateStatus === 'downloaded' || releaseInfo?.updateStatus === 'error'
       ? 'settings-status-pill-preview'
       : 'settings-status-pill-stable'
+  const environmentIssueCount = useMemo(() => {
+    if (!environmentHealth) {
+      return 0
+    }
+
+    const toolIssues = environmentHealth.tools.filter((tool) => tool.status !== 'available').length
+    const permissionIssues = environmentHealth.permissions.filter((item) => item.status !== 'ok').length
+    return toolIssues + permissionIssues
+  }, [environmentHealth])
 
   function togglePinnedService(serviceId: ServiceId) {
     setPinnedServiceIds((current) =>
@@ -904,6 +940,19 @@ export function App() {
       setSettingsMessage(err instanceof Error ? err.message : String(err))
     } finally {
       setEnvironmentBusy(false)
+    }
+  }
+
+  function dismissEnvironmentOnboarding(nextScreen?: Screen): void {
+    try {
+      window.localStorage.setItem(ENVIRONMENT_ONBOARDING_STORAGE_KEY, 'dismissed')
+    } catch {
+      // Ignore persistence failures and still continue into the app shell.
+    }
+
+    setShowEnvironmentOnboarding(false)
+    if (nextScreen) {
+      setScreen(nextScreen)
     }
   }
 
@@ -1587,6 +1636,94 @@ export function App() {
       <main className="catalog-main">
         {(globalWarning || catalogError || connectionState.error) && <div className="error-banner">{globalWarning || catalogError || connectionState.error}</div>}
         {screen === 'profiles' && profileActionMsg && <div className="success-banner">{profileActionMsg}</div>}
+        {showEnvironmentOnboarding && (
+          <section className="environment-onboarding-shell">
+            <div className="environment-onboarding-backdrop" aria-hidden="true" />
+            <div className="environment-onboarding-card">
+              <div className="environment-onboarding-hero">
+                <div>
+                  <div className="eyebrow">First Run</div>
+                  <h2>Validate this machine before opening AWS workflows.</h2>
+                  <p className="hero-path">
+                    AWS Lens depends on local CLIs and a few writable paths. This check gives you a clean starting point before you connect profiles or run operator flows.
+                  </p>
+                </div>
+                <span className={`settings-status-pill settings-status-pill-${environmentHealth ? (environmentIssueCount > 0 ? 'preview' : 'stable') : 'unknown'}`}>
+                  {environmentHealth
+                    ? environmentIssueCount > 0
+                      ? `${environmentIssueCount} issue${environmentIssueCount === 1 ? '' : 's'} found`
+                      : 'Environment ready'
+                    : environmentBusy
+                      ? 'Checking environment'
+                      : 'Check pending'}
+                </span>
+              </div>
+
+              <div className="environment-onboarding-summary">
+                <strong>{environmentHealth?.summary ?? 'Running environment checks for this machine.'}</strong>
+                <span>Status: {environmentHealth?.overallSeverity ?? (environmentBusy ? 'checking' : 'idle')}</span>
+                <span>Checked: {environmentHealth?.checkedAt ? new Date(environmentHealth.checkedAt).toLocaleString() : environmentBusy ? 'Running now' : 'Not checked yet'}</span>
+              </div>
+
+              <div className="environment-onboarding-grid">
+                <section className="environment-onboarding-section">
+                  <div className="eyebrow">Tooling</div>
+                  {environmentHealth?.tools.map((tool) => (
+                    <div key={tool.id} className="settings-environment-row">
+                      <div>
+                        <strong>{tool.label}</strong>
+                        <p>{tool.detail}</p>
+                        {tool.remediation && <small>{tool.remediation}</small>}
+                      </div>
+                      <div className="settings-environment-meta">
+                        <span className={`settings-status-pill settings-status-pill-${tool.status === 'available' ? 'stable' : tool.status === 'missing' ? 'preview' : 'unknown'}`}>{tool.status}</span>
+                        <code>{tool.version || 'not found'}</code>
+                      </div>
+                    </div>
+                  ))}
+                  {!environmentHealth && (
+                    <div className="settings-release-notes">
+                      <p>{environmentBusy ? 'Inspecting installed CLIs and local dependencies.' : 'No tooling report loaded yet.'}</p>
+                    </div>
+                  )}
+                </section>
+
+                <section className="environment-onboarding-section">
+                  <div className="eyebrow">Permissions</div>
+                  {environmentHealth?.permissions.map((item) => (
+                    <div key={item.id} className="settings-environment-row">
+                      <div>
+                        <strong>{item.label}</strong>
+                        <p>{item.detail}</p>
+                        {item.remediation && <small>{item.remediation}</small>}
+                      </div>
+                      <div className="settings-environment-meta">
+                        <span className={`settings-status-pill settings-status-pill-${item.status === 'ok' ? 'stable' : item.status === 'error' ? 'preview' : 'unknown'}`}>{item.status}</span>
+                      </div>
+                    </div>
+                  ))}
+                  {!environmentHealth && (
+                    <div className="settings-release-notes">
+                      <p>{environmentBusy ? 'Checking file-system access for local AWS Lens state.' : 'No permission report loaded yet.'}</p>
+                    </div>
+                  )}
+                </section>
+              </div>
+
+              <div className="environment-onboarding-actions">
+                <button type="button" className="accent" disabled={environmentBusy} onClick={() => void handleRefreshEnvironmentHealth()}>
+                  {environmentBusy ? 'Refreshing...' : 'Run checks again'}
+                </button>
+                <button type="button" onClick={() => dismissEnvironmentOnboarding('settings')}>
+                  Open settings
+                </button>
+                <button type="button" onClick={() => dismissEnvironmentOnboarding()}>
+                  Continue to app
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
         {visitedScreens.map((visitedScreen) => {
           const shouldSoftRefresh = SOFT_REFRESH_SCREENS.has(visitedScreen)
           const sectionKey = shouldSoftRefresh
