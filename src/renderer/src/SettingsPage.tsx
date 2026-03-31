@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react'
 
-import type { AppReleaseInfo, AppSettings, AwsProfile, AwsRegionOption, EnvironmentHealthReport } from '@shared/types'
+import type { AppReleaseInfo, AppSettings, AwsProfile, AwsRegionOption, EnvironmentHealthReport, TerraformCliInfo } from '@shared/types'
 
 type SettingsPageProps = {
   appSettings: AppSettings | null
   profiles: AwsProfile[]
   regions: AwsRegionOption[]
+  toolchainInfo: TerraformCliInfo | null
   releaseInfo: AppReleaseInfo | null
   releaseStateLabel: string
   releaseStateTone: string
   environmentHealth: EnvironmentHealthReport | null
   environmentBusy: boolean
+  toolchainBusy: boolean
   settingsMessage: string
   onUpdateGeneralSettings: (update: AppSettings['general']) => void
+  onUpdateToolchainSettings: (update: AppSettings['toolchain']) => void
   onCheckForUpdates: () => void
   onDownloadUpdate: () => void
   onInstallUpdate: () => void
@@ -48,7 +51,7 @@ function summarizeRefreshInterval(seconds: number): string {
   return `${seconds}s`
 }
 
-function summarizeToolchain(settings: AppSettings | null): Array<{ label: string; value: string; detail: string }> {
+function summarizeToolchain(settings: AppSettings | null, toolchainInfo: TerraformCliInfo | null): Array<{ label: string; value: string; detail: string }> {
   if (!settings) {
     return [
       { label: 'Preferred CLI', value: 'Loading', detail: 'Settings contract is ready. Toolchain controls land in the next slices.' },
@@ -64,7 +67,7 @@ function summarizeToolchain(settings: AppSettings | null): Array<{ label: string
     settings.toolchain.dockerPathOverride
   ].filter((value) => value.trim())
 
-  return [
+  const rows = [
     {
       label: 'Preferred CLI',
       value: settings.toolchain.preferredTerraformCliKind || 'Auto detect',
@@ -76,6 +79,16 @@ function summarizeToolchain(settings: AppSettings | null): Array<{ label: string
       detail: 'Per-tool path overrides are prepared in state even before the edit controls are enabled.'
     }
   ]
+
+  rows.unshift({
+    label: 'Detected runtime',
+    value: toolchainInfo?.found ? `${toolchainInfo.label} ${toolchainInfo.version}` : 'No CLI detected',
+    detail: toolchainInfo?.found
+      ? `Current active CLI path: ${toolchainInfo.path || 'resolved by the runtime'}`
+      : (toolchainInfo?.error || 'Run a rescan after installing Terraform or OpenTofu.')
+  })
+
+  return rows
 }
 
 function summarizeSecurity(): Array<{ label: string; value: string; detail: string }> {
@@ -129,13 +142,16 @@ export function SettingsPage({
   appSettings,
   profiles,
   regions,
+  toolchainInfo,
   releaseInfo,
   releaseStateLabel,
   releaseStateTone,
   environmentHealth,
   environmentBusy,
+  toolchainBusy,
   settingsMessage,
   onUpdateGeneralSettings,
+  onUpdateToolchainSettings,
   onCheckForUpdates,
   onDownloadUpdate,
   onInstallUpdate,
@@ -150,6 +166,14 @@ export function SettingsPage({
     defaultRegion: 'us-east-1',
     launchScreen: 'profiles'
   })
+  const [toolchainDraft, setToolchainDraft] = useState<AppSettings['toolchain']>({
+    preferredTerraformCliKind: '',
+    terraformPathOverride: '',
+    opentofuPathOverride: '',
+    awsCliPathOverride: '',
+    kubectlPathOverride: '',
+    dockerPathOverride: ''
+  })
 
   useEffect(() => {
     if (!appSettings) {
@@ -157,6 +181,14 @@ export function SettingsPage({
     }
 
     setGeneralDraft(appSettings.general)
+  }, [appSettings])
+
+  useEffect(() => {
+    if (!appSettings) {
+      return
+    }
+
+    setToolchainDraft(appSettings.toolchain)
   }, [appSettings])
 
   return (
@@ -298,9 +330,90 @@ export function SettingsPage({
         <SummaryCard
           eyebrow="Toolchain"
           title="CLI routing"
-          rows={summarizeToolchain(appSettings)}
+          rows={summarizeToolchain(appSettings, toolchainInfo)}
         />
       </div>
+
+      <section className="settings-panel-card settings-panel-card-wide">
+        <div className="settings-panel-card__header">
+          <div>
+            <div className="eyebrow">Toolchain</div>
+            <h3>CLI preferences and overrides</h3>
+          </div>
+        </div>
+        <div className="settings-toolchain-form">
+          <label className="field compact">
+            <span>Preferred Terraform family</span>
+            <select
+              value={toolchainDraft.preferredTerraformCliKind}
+              onChange={(event) => setToolchainDraft((current) => ({
+                ...current,
+                preferredTerraformCliKind: event.target.value as AppSettings['toolchain']['preferredTerraformCliKind']
+              }))}
+              disabled={!appSettings || toolchainBusy}
+            >
+              <option value="">Auto detect</option>
+              <option value="opentofu">OpenTofu</option>
+              <option value="terraform">Terraform</option>
+            </select>
+          </label>
+
+          <label className="field compact">
+            <span>Terraform path override</span>
+            <input
+              value={toolchainDraft.terraformPathOverride}
+              onChange={(event) => setToolchainDraft((current) => ({ ...current, terraformPathOverride: event.target.value }))}
+              placeholder="Optional executable path"
+              disabled={!appSettings || toolchainBusy}
+            />
+          </label>
+
+          <label className="field compact">
+            <span>OpenTofu path override</span>
+            <input
+              value={toolchainDraft.opentofuPathOverride}
+              onChange={(event) => setToolchainDraft((current) => ({ ...current, opentofuPathOverride: event.target.value }))}
+              placeholder="Optional executable path"
+              disabled={!appSettings || toolchainBusy}
+            />
+          </label>
+
+          <label className="field compact">
+            <span>AWS CLI path override</span>
+            <input
+              value={toolchainDraft.awsCliPathOverride}
+              onChange={(event) => setToolchainDraft((current) => ({ ...current, awsCliPathOverride: event.target.value }))}
+              placeholder="Optional executable path"
+              disabled={!appSettings || toolchainBusy}
+            />
+          </label>
+
+          <label className="field compact">
+            <span>kubectl path override</span>
+            <input
+              value={toolchainDraft.kubectlPathOverride}
+              onChange={(event) => setToolchainDraft((current) => ({ ...current, kubectlPathOverride: event.target.value }))}
+              placeholder="Optional executable path"
+              disabled={!appSettings || toolchainBusy}
+            />
+          </label>
+
+          <label className="field compact">
+            <span>Docker path override</span>
+            <input
+              value={toolchainDraft.dockerPathOverride}
+              onChange={(event) => setToolchainDraft((current) => ({ ...current, dockerPathOverride: event.target.value }))}
+              placeholder="Optional executable path"
+              disabled={!appSettings || toolchainBusy}
+            />
+          </label>
+        </div>
+        <div className="settings-action-row">
+          <button type="button" className="accent" disabled={!appSettings || toolchainBusy} onClick={() => onUpdateToolchainSettings(toolchainDraft)}>
+            {toolchainBusy ? 'Saving...' : 'Save toolchain settings'}
+          </button>
+        </div>
+      </section>
 
       <div className="settings-panel-grid">
         <section className="settings-panel-card">

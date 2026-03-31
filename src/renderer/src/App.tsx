@@ -12,6 +12,7 @@ import type {
   ServiceDescriptor,
   ServiceId,
   ServiceMaturity,
+  TerraformCliInfo,
   TokenizedFocus
 } from '@shared/types'
 import {
@@ -26,6 +27,7 @@ import {
   getAppSettings,
   getEnvironmentHealth,
   getEnterpriseSettings,
+  getTerraformCliInfo,
   invalidateAllPageCaches,
   invalidatePageCache,
   installAppUpdate,
@@ -33,6 +35,7 @@ import {
   listServices,
   openExternalUrl,
   saveCredentials,
+  setTerraformCliKind,
   setEnterpriseAccessMode,
   updateAppSettings,
   useAwsActivity,
@@ -363,6 +366,8 @@ export function App() {
   const [settingsMessage, setSettingsMessage] = useState('')
   const [environmentHealth, setEnvironmentHealth] = useState<EnvironmentHealthReport | null>(null)
   const [environmentBusy, setEnvironmentBusy] = useState(false)
+  const [toolchainInfo, setToolchainInfo] = useState<TerraformCliInfo | null>(null)
+  const [toolchainBusy, setToolchainBusy] = useState(false)
   const [showEnvironmentOnboarding, setShowEnvironmentOnboarding] = useState(false)
   const [globalWarning, setGlobalWarning] = useState('')
   const [focusMap, setFocusMap] = useState<FocusMap>({})
@@ -395,6 +400,12 @@ export function App() {
   useEffect(() => {
     void getAppSettings().then(setAppSettings).catch(() => {
       // Ignore settings hydration failures until the settings surface is opened.
+    })
+  }, [])
+
+  useEffect(() => {
+    void getTerraformCliInfo().then(setToolchainInfo).catch(() => {
+      // Ignore toolchain hydration failures until the settings surface is opened.
     })
   }, [])
 
@@ -956,6 +967,29 @@ export function App() {
     }
   }
 
+  async function handleUpdateToolchainSettings(update: AppSettings['toolchain']): Promise<void> {
+    setToolchainBusy(true)
+    setSettingsMessage('')
+    try {
+      const nextSettings = await updateAppSettings({ toolchain: update })
+      setAppSettings(nextSettings)
+
+      if (update.preferredTerraformCliKind) {
+        const cliInfo = await setTerraformCliKind(update.preferredTerraformCliKind)
+        setToolchainInfo(cliInfo)
+      } else {
+        const cliInfo = await getTerraformCliInfo()
+        setToolchainInfo(cliInfo)
+      }
+
+      setSettingsMessage('Toolchain preferences saved.')
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setToolchainBusy(false)
+    }
+  }
+
   async function handleDownloadUpdate(): Promise<void> {
     setSettingsMessage('')
     try {
@@ -984,15 +1018,18 @@ export function App() {
 
   async function handleRefreshEnvironmentHealth(): Promise<void> {
     setEnvironmentBusy(true)
+    setToolchainBusy(true)
     setSettingsMessage('')
     try {
-      const report = await getEnvironmentHealth()
+      const [report, cliInfo] = await Promise.all([getEnvironmentHealth(), getTerraformCliInfo()])
       setEnvironmentHealth(report)
+      setToolchainInfo(cliInfo)
       setSettingsMessage(report.summary)
     } catch (err) {
       setSettingsMessage(err instanceof Error ? err.message : String(err))
     } finally {
       setEnvironmentBusy(false)
+      setToolchainBusy(false)
     }
   }
 
@@ -1252,13 +1289,16 @@ export function App() {
           appSettings={appSettings}
           profiles={connectionState.profiles}
           regions={connectionState.regions}
+          toolchainInfo={toolchainInfo}
           releaseInfo={releaseInfo}
           releaseStateLabel={releaseStateLabel}
           releaseStateTone={releaseStateTone}
           environmentHealth={environmentHealth}
           environmentBusy={environmentBusy}
+          toolchainBusy={toolchainBusy}
           settingsMessage={settingsMessage}
           onUpdateGeneralSettings={(update) => void handleUpdateGeneralSettings(update)}
+          onUpdateToolchainSettings={(update) => void handleUpdateToolchainSettings(update)}
           onCheckForUpdates={() => void handleCheckForUpdates()}
           onDownloadUpdate={() => void handleDownloadUpdate()}
           onInstallUpdate={() => void handleInstallUpdate()}

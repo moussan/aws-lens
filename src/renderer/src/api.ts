@@ -109,6 +109,7 @@ import type {
   StsDecodedAuthorizationMessage,
   TerraformCommandLog,
   TerraformCommandRequest,
+  TerraformCliInfo,
   TerraformDriftReport,
   TerraformInputConfiguration,
   TerraformProject,
@@ -1465,6 +1466,18 @@ export async function deleteLoadBalancer(connection: AwsConnection, loadBalancer
 
 export async function listProjects(profileName: string): Promise<TerraformProjectListItem[]> {
   return unwrap((await terraformBridge().listProjects(profileName)) as Wrapped<TerraformProjectListItem[]>)
+}
+
+export async function detectTerraformCli(): Promise<TerraformCliInfo> {
+  return unwrap((await terraformBridge().detectCli()) as Wrapped<TerraformCliInfo>)
+}
+
+export async function getTerraformCliInfo(): Promise<TerraformCliInfo> {
+  return unwrap((await terraformBridge().getCliInfo()) as Wrapped<TerraformCliInfo>)
+}
+
+export async function setTerraformCliKind(kind: 'terraform' | 'opentofu'): Promise<TerraformCliInfo> {
+  return unwrap((await terraformBridge().setCliKind(kind)) as Wrapped<TerraformCliInfo>)
 }
 
 export async function getProject(profileName: string, projectId: string): Promise<TerraformProject> {

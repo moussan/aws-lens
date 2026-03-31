@@ -363,6 +363,9 @@ declare global {
       getIamCredentialReport: (c: AwsConnection) => Promise<unknown>
     }
     terraformWorkspace: {
+      detectCli: () => Promise<unknown>
+      getCliInfo: () => Promise<unknown>
+      setCliKind: (kind: 'terraform' | 'opentofu') => Promise<unknown>
       listProjects: (profileName: string, connection?: AwsConnection) => Promise<unknown>
       getProject: (profileName: string, projectId: string, connection?: AwsConnection) => Promise<unknown>
       getDrift: (profileName: string, projectId: string, connection: AwsConnection, options?: { forceRefresh?: boolean }) => Promise<unknown>
