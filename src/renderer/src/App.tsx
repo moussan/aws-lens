@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import appLogoUrl from '../../../assets/aws-lens-logo.png'
 import type {
   AppReleaseInfo,
+  AppSettings,
   ComparisonRequest,
   EnvironmentHealthReport,
   EnterpriseAccessMode,
@@ -22,6 +23,7 @@ import {
   exportDiagnosticsBundle,
   exportEnterpriseAuditEvents,
   getAppReleaseInfo,
+  getAppSettings,
   getEnvironmentHealth,
   getEnterpriseSettings,
   invalidateAllPageCaches,
@@ -61,6 +63,7 @@ import { Route53Console } from './Route53Console'
 import { S3Console } from './S3Console'
 import { SecretsManagerConsole } from './SecretsManagerConsole'
 import { SecurityGroupsConsole } from './SecurityGroupsConsole'
+import { SettingsPage } from './SettingsPage'
 import { SnsConsole } from './SnsConsole'
 import { SqsConsole } from './SqsConsole'
 import { SessionHub } from './SessionHub'
@@ -336,6 +339,7 @@ function refreshTagsForScreen(screen: Screen): CacheTag[] {
 
 export function App() {
   const [releaseInfo, setReleaseInfo] = useState<AppReleaseInfo | null>(null)
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null)
   const [screen, setScreen] = useState<Screen>('profiles')
   const [navOpen, setNavOpen] = useState(true)
   const [visitedScreens, setVisitedScreens] = useState<Screen[]>(['profiles'])
@@ -380,6 +384,12 @@ export function App() {
   useEffect(() => {
     void getAppReleaseInfo().then(setReleaseInfo).catch(() => {
       // Ignore release check failures in the UI.
+    })
+  }, [])
+
+  useEffect(() => {
+    void getAppSettings().then(setAppSettings).catch(() => {
+      // Ignore settings hydration failures until the settings surface is opened.
     })
   }, [])
 
@@ -1194,143 +1204,21 @@ export function App() {
     }
 
     if (targetScreen === 'settings') {
-      const buildChannel = releaseInfo?.currentBuild.channel ?? 'unknown'
-      const latestRelease = releaseInfo?.latestRelease
-      const releaseNotesPreview = latestRelease?.notes?.trim() ?? ''
-
       return (
-        <section className="settings-page">
-          <div className="settings-page-header">
-            <div>
-              <div className="eyebrow">Settings</div>
-              <h2>App Info</h2>
-              <p className="hero-path">Application metadata, release channel state, and update actions will live here as the settings surface grows.</p>
-            </div>
-          </div>
-
-          {settingsMessage && <div className="success-banner">{settingsMessage}</div>}
-
-          <div className="settings-panel-grid">
-            <section className="settings-panel-card">
-              <div className="settings-panel-card__header">
-                <div>
-                  <div className="eyebrow">Build</div>
-                  <h3>Current build</h3>
-                </div>
-                <span className={`settings-status-pill settings-status-pill-${buildChannel}`}>{buildChannel}</span>
-              </div>
-              <div className="settings-info-grid">
-                <div className="settings-info-row"><span>Version</span><strong>{releaseInfo?.currentVersion ? `v${releaseInfo.currentVersion}` : 'Unknown'}</strong></div>
-                <div className="settings-info-row"><span>Build hash</span><strong>{releaseInfo?.currentBuild.buildHash ?? 'Unavailable'}</strong></div>
-                <div className="settings-info-row"><span>Updater</span><strong>{releaseInfo?.supportsAutoUpdate ? 'Enabled in packaged app' : 'Available in packaged app only'}</strong></div>
-                <div className="settings-info-row"><span>Check status</span><strong>{releaseInfo?.checkStatus ?? 'idle'}</strong></div>
-                <div className="settings-info-row"><span>Update status</span><strong>{releaseInfo?.updateStatus ?? 'idle'}</strong></div>
-                <div className="settings-info-row"><span>Last checked</span><strong>{releaseInfo?.checkedAt ? new Date(releaseInfo.checkedAt).toLocaleString() : releaseInfo?.supportsAutoUpdate ? 'Not checked yet' : 'Disabled in dev build'}</strong></div>
-              </div>
-            </section>
-
-            <section className="settings-panel-card">
-              <div className="settings-panel-card__header">
-                <div>
-                  <div className="eyebrow">Updates</div>
-                  <h3>Release state</h3>
-                </div>
-                <span className={`settings-status-pill ${releaseStateTone}`}>
-                  {releaseStateLabel}
-                </span>
-              </div>
-              <div className="settings-info-grid">
-                <div className="settings-info-row"><span>Latest version</span><strong>{releaseInfo?.latestVersion ? `v${releaseInfo.latestVersion}` : 'Unavailable'}</strong></div>
-                <div className="settings-info-row"><span>Release name</span><strong>{latestRelease?.name ?? 'Unavailable'}</strong></div>
-                <div className="settings-info-row"><span>Published</span><strong>{latestRelease?.publishedAt ? new Date(latestRelease.publishedAt).toLocaleString() : 'Unavailable'}</strong></div>
-                <div className="settings-info-row"><span>Download progress</span><strong>{typeof releaseInfo?.downloadProgressPercent === 'number' ? `${Math.round(releaseInfo.downloadProgressPercent)}%` : 'Not downloading'}</strong></div>
-              </div>
-              <div className="settings-action-row">
-                <button type="button" className="accent" disabled={!releaseInfo?.canCheckForUpdates} onClick={() => void handleCheckForUpdates()}>
-                  {releaseInfo?.supportsAutoUpdate ? (releaseInfo?.checkStatus === 'checking' ? 'Checking...' : 'Check for updates') : 'Package app to enable'}
-                </button>
-                <button type="button" disabled={!releaseInfo?.canDownloadUpdate} onClick={() => void handleDownloadUpdate()}>
-                  {releaseInfo?.updateStatus === 'downloading' ? 'Downloading...' : 'Download update'}
-                </button>
-                <button type="button" disabled={!releaseInfo?.canInstallUpdate} onClick={() => void handleInstallUpdate()}>
-                  Install update
-                </button>
-                <button type="button" onClick={() => void openExternalUrl(releaseInfo?.latestRelease.url || releaseInfo?.releaseUrl || 'https://github.com/BoraKostem/AWS-Lens/releases/')}>
-                  Open release page
-                </button>
-              </div>
-              {releaseInfo?.error && <div className="error-banner">{releaseInfo.error}</div>}
-            </section>
-          </div>
-
-          <section className="settings-panel-card settings-panel-card-wide">
-            <div className="settings-panel-card__header">
-              <div>
-                <div className="eyebrow">Environment</div>
-                <h3>Machine validation</h3>
-              </div>
-              <div className="settings-action-row">
-                <button type="button" className="accent" disabled={environmentBusy} onClick={() => void handleRefreshEnvironmentHealth()}>
-                  {environmentBusy ? 'Refreshing...' : 'Refresh environment'}
-                </button>
-              </div>
-            </div>
-            <div className="settings-environment-summary">
-              <strong>{environmentHealth?.summary ?? 'Environment checks have not run yet.'}</strong>
-              <span>Status: {environmentHealth?.overallSeverity ?? 'idle'}</span>
-              <span>Checked: {environmentHealth?.checkedAt ? new Date(environmentHealth.checkedAt).toLocaleString() : 'Not checked yet'}</span>
-            </div>
-            <div className="settings-environment-grid">
-              <div className="settings-environment-section">
-                <div className="eyebrow">Tooling</div>
-                {environmentHealth?.tools.map((tool) => (
-                  <div key={tool.id} className="settings-environment-row">
-                    <div>
-                      <strong>{tool.label}</strong>
-                      <p>{tool.detail}</p>
-                      {tool.remediation && <small>{tool.remediation}</small>}
-                    </div>
-                    <div className="settings-environment-meta">
-                      <span className={`settings-status-pill settings-status-pill-${tool.status === 'available' ? 'stable' : tool.status === 'missing' ? 'preview' : 'unknown'}`}>{tool.status}</span>
-                      <code>{tool.version || 'not found'}</code>
-                    </div>
-                  </div>
-                ))}
-                {!environmentHealth && !environmentBusy && <div className="settings-release-notes"><p>No environment report loaded yet.</p></div>}
-              </div>
-              <div className="settings-environment-section">
-                <div className="eyebrow">Permissions</div>
-                {environmentHealth?.permissions.map((item) => (
-                  <div key={item.id} className="settings-environment-row">
-                    <div>
-                      <strong>{item.label}</strong>
-                      <p>{item.detail}</p>
-                      {item.remediation && <small>{item.remediation}</small>}
-                    </div>
-                    <div className="settings-environment-meta">
-                      <span className={`settings-status-pill settings-status-pill-${item.status === 'ok' ? 'stable' : item.status === 'error' ? 'preview' : 'unknown'}`}>{item.status}</span>
-                    </div>
-                  </div>
-                ))}
-                {!environmentHealth && !environmentBusy && <div className="settings-release-notes"><p>No permission report loaded yet.</p></div>}
-              </div>
-            </div>
-          </section>
-
-          <section className="settings-panel-card settings-panel-card-wide">
-            <div className="settings-panel-card__header">
-              <div>
-                <div className="eyebrow">Release Notes</div>
-                <h3>Latest published notes</h3>
-              </div>
-            </div>
-            <div className="settings-release-notes">
-              {releaseNotesPreview
-                ? <pre>{releaseNotesPreview}</pre>
-                : <p>No release notes are available yet for the currently resolved release metadata.</p>}
-            </div>
-          </section>
-        </section>
+        <SettingsPage
+          appSettings={appSettings}
+          releaseInfo={releaseInfo}
+          releaseStateLabel={releaseStateLabel}
+          releaseStateTone={releaseStateTone}
+          environmentHealth={environmentHealth}
+          environmentBusy={environmentBusy}
+          settingsMessage={settingsMessage}
+          onCheckForUpdates={() => void handleCheckForUpdates()}
+          onDownloadUpdate={() => void handleDownloadUpdate()}
+          onInstallUpdate={() => void handleInstallUpdate()}
+          onOpenReleasePage={() => void openExternalUrl(releaseInfo?.latestRelease.url || releaseInfo?.releaseUrl || 'https://github.com/BoraKostem/AWS-Lens/releases/')}
+          onRefreshEnvironment={() => void handleRefreshEnvironmentHealth()}
+        />
       )
     }
 

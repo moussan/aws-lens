@@ -4659,11 +4659,24 @@ button.overview-tile.clickable.active strong {
   box-shadow: 0 24px 60px rgba(6, 12, 20, 0.34);
 }
 
+.settings-page-header__meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.55rem;
+}
+
 .settings-page-header h2,
 .settings-panel-card h3 {
   margin: 0.2rem 0 0;
   color: #f3f7fc;
   letter-spacing: -0.03em;
+}
+
+.settings-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
 }
 
 .settings-panel-grid {
@@ -4747,6 +4760,40 @@ button.overview-tile.clickable.active strong {
   color: #f3f7fc;
   font-size: 0.94rem;
   word-break: break-word;
+}
+
+.settings-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.settings-summary-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.72);
+}
+
+.settings-summary-row strong {
+  color: #f3f7fc;
+}
+
+.settings-summary-row p {
+  margin: 0.22rem 0 0;
+  color: #a8b8ca;
+}
+
+.settings-summary-row span {
+  min-width: 108px;
+  text-align: right;
+  color: #dbe7f3;
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .settings-action-row {
@@ -6907,6 +6954,7 @@ textarea {
 }
 
 @media (max-width: 1040px) {
+  .settings-section-grid,
   .settings-info-grid,
   .settings-environment-grid,
   .environment-onboarding-grid {
