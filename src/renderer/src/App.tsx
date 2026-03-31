@@ -515,12 +515,6 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (!terminalOpen) {
-      void closeAwsTerminal()
-    }
-  }, [terminalOpen])
-
-  useEffect(() => {
     if (!profileContextMenu) {
       return
     }

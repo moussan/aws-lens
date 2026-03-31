@@ -510,12 +510,14 @@ const awsLensApi = {
     ipcRenderer.invoke('waf:disassociate-resource', connection, resourceArn),
 
   /* App terminal */
-  openAwsTerminal: (connection: AwsConnection, initialCommand?: string) => ipcRenderer.invoke('terminal:open-aws', connection, initialCommand),
-  updateAwsTerminalContext: (connection: AwsConnection) => ipcRenderer.invoke('terminal:update-aws-context', connection),
-  sendTerminalInput: (input: string) => ipcRenderer.invoke('terminal:input', input),
-  runTerminalCommand: (command: string) => ipcRenderer.invoke('terminal:run-command', command),
-  resizeTerminal: (cols: number, rows: number) => ipcRenderer.invoke('terminal:resize', cols, rows),
-  closeTerminal: () => ipcRenderer.invoke('terminal:close'),
+  openAwsTerminal: (sessionId: string, connection: AwsConnection, initialCommand?: string) =>
+    ipcRenderer.invoke('terminal:open-aws', sessionId, connection, initialCommand),
+  updateAwsTerminalContext: (sessionId: string, connection: AwsConnection) =>
+    ipcRenderer.invoke('terminal:update-aws-context', sessionId, connection),
+  sendTerminalInput: (sessionId: string, input: string) => ipcRenderer.invoke('terminal:input', sessionId, input),
+  runTerminalCommand: (sessionId: string, command: string) => ipcRenderer.invoke('terminal:run-command', sessionId, command),
+  resizeTerminal: (sessionId: string, cols: number, rows: number) => ipcRenderer.invoke('terminal:resize', sessionId, cols, rows),
+  closeTerminal: (sessionId?: string) => ipcRenderer.invoke('terminal:close', sessionId),
   subscribeTerminal: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload)
     terminalListenerMap.set(listener, wrapped)

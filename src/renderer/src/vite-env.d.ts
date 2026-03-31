@@ -289,12 +289,12 @@ declare global {
       deleteWafRule: (connection: AwsConnection, scope: string, id: string, name: string, lockToken: string, ruleName: string) => Promise<unknown>
       associateWebAcl: (connection: AwsConnection, resourceArn: string, webAclArn: string) => Promise<unknown>
       disassociateWebAcl: (connection: AwsConnection, resourceArn: string) => Promise<unknown>
-      openAwsTerminal: (connection: AwsConnection, initialCommand?: string) => Promise<unknown>
-      updateAwsTerminalContext: (connection: AwsConnection) => Promise<unknown>
-      sendTerminalInput: (input: string) => Promise<unknown>
-      runTerminalCommand: (command: string) => Promise<unknown>
-      resizeTerminal: (cols: number, rows: number) => Promise<unknown>
-      closeTerminal: () => Promise<unknown>
+      openAwsTerminal: (sessionId: string, connection: AwsConnection, initialCommand?: string) => Promise<unknown>
+      updateAwsTerminalContext: (sessionId: string, connection: AwsConnection) => Promise<unknown>
+      sendTerminalInput: (sessionId: string, input: string) => Promise<unknown>
+      runTerminalCommand: (sessionId: string, command: string) => Promise<unknown>
+      resizeTerminal: (sessionId: string, cols: number, rows: number) => Promise<unknown>
+      closeTerminal: (sessionId?: string) => Promise<unknown>
       subscribeTerminal: (listener: (event: unknown) => void) => void
       unsubscribeTerminal: (listener: (event: unknown) => void) => void
       subscribeTempVolumeProgress: (listener: (event: EbsTempInspectionProgress) => void) => void

@@ -143,8 +143,13 @@ type ProjectEvent =
   | { type: 'completed'; projectId: string; log: TerraformCommandLog; project: TerraformProject | null }
 
 export type TerminalEvent =
-  | { type: 'output'; text: string }
-  | { type: 'exit'; code: number | null }
+  | { sessionId: string; type: 'output'; text: string }
+  | { sessionId: string; type: 'exit'; code: number | null }
+
+export type AwsTerminalOpenResult = {
+  created: boolean
+  history: string
+}
 
 export type AwsActivityState = {
   pendingCount: number
@@ -609,32 +614,32 @@ export function useAwsActivity(): AwsActivityState {
   return state
 }
 
-export async function openAwsTerminal(connection: AwsConnection, initialCommand?: string): Promise<void> {
-  await rawAwsBridge().openAwsTerminal(connection, initialCommand)
+export async function openAwsTerminal(sessionId: string, connection: AwsConnection, initialCommand?: string): Promise<AwsTerminalOpenResult> {
+  return rawAwsBridge().openAwsTerminal(sessionId, connection, initialCommand) as Promise<AwsTerminalOpenResult>
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
   await rawAwsBridge().openExternalUrl(url)
 }
 
-export async function updateAwsTerminalContext(connection: AwsConnection): Promise<void> {
-  await rawAwsBridge().updateAwsTerminalContext(connection)
+export async function updateAwsTerminalContext(sessionId: string, connection: AwsConnection): Promise<void> {
+  await rawAwsBridge().updateAwsTerminalContext(sessionId, connection)
 }
 
-export async function sendAwsTerminalInput(input: string): Promise<void> {
-  await rawAwsBridge().sendTerminalInput(input)
+export async function sendAwsTerminalInput(sessionId: string, input: string): Promise<void> {
+  await rawAwsBridge().sendTerminalInput(sessionId, input)
 }
 
-export async function runAwsTerminalCommand(command: string): Promise<void> {
-  await rawAwsBridge().runTerminalCommand(command)
+export async function runAwsTerminalCommand(sessionId: string, command: string): Promise<void> {
+  await rawAwsBridge().runTerminalCommand(sessionId, command)
 }
 
-export async function resizeAwsTerminal(cols: number, rows: number): Promise<void> {
-  await rawAwsBridge().resizeTerminal(cols, rows)
+export async function resizeAwsTerminal(sessionId: string, cols: number, rows: number): Promise<void> {
+  await rawAwsBridge().resizeTerminal(sessionId, cols, rows)
 }
 
-export async function closeAwsTerminal(): Promise<void> {
-  await rawAwsBridge().closeTerminal()
+export async function closeAwsTerminal(sessionId?: string): Promise<void> {
+  await rawAwsBridge().closeTerminal(sessionId)
 }
 
 export function subscribeToAwsTerminal(listener: (event: TerminalEvent) => void): () => void {
