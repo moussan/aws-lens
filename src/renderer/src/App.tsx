@@ -290,6 +290,22 @@ function PlaceholderScreen({ service }: { service: ServiceDescriptor }) {
   )
 }
 
+function InitialLoadingScreen(): JSX.Element {
+  return (
+    <section className="initial-loading-shell" aria-live="polite" aria-busy="true">
+      <div className="initial-loading-card">
+        <img src={appLogoUrl} alt="AWS Lens" className="initial-loading-logo" />
+        <div className="eyebrow">AWS Lens</div>
+        <h1>AWS Lens is loading</h1>
+        <p>Initializing workspace shell, settings, and service catalog.</p>
+        <div className="initial-loading-progress" aria-hidden="true">
+          <span />
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function screenCacheTag(screen: Screen): CacheTag | null {
   switch (screen) {
     case 'overview':
@@ -346,6 +362,8 @@ function refreshTagsForScreen(screen: Screen): CacheTag[] {
 export function App() {
   const [releaseInfo, setReleaseInfo] = useState<AppReleaseInfo | null>(null)
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null)
+  const [servicesHydrated, setServicesHydrated] = useState(false)
+  const [settingsHydrated, setSettingsHydrated] = useState(false)
   const [screen, setScreen] = useState<Screen>('profiles')
   const [navOpen, setNavOpen] = useState(true)
   const [visitedScreens, setVisitedScreens] = useState<Screen[]>(['profiles'])
@@ -389,11 +407,14 @@ export function App() {
   const terminalAutoOpenedScopeRef = useRef('')
 
   useEffect(() => {
-    void listServices().then((loadedServices) => {
-      setServices(loadedServices)
-    }).catch((error) => {
-      setCatalogError(error instanceof Error ? error.message : String(error))
-    })
+    void listServices()
+      .then((loadedServices) => {
+        setServices(loadedServices)
+      })
+      .catch((error) => {
+        setCatalogError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => setServicesHydrated(true))
   }, [])
 
   useEffect(() => {
@@ -403,10 +424,15 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    void getAppSettings().then(setAppSettings).catch(() => {
-      // Ignore settings hydration failures until the settings surface is opened.
-    })
+    void getAppSettings()
+      .then(setAppSettings)
+      .catch(() => {
+        // Ignore settings hydration failures until the settings surface is opened.
+      })
+      .finally(() => setSettingsHydrated(true))
   }, [])
+
+  const showInitialLoadingScreen = !servicesHydrated || !settingsHydrated
 
   useEffect(() => {
     void getTerraformCliInfo().then(setToolchainInfo).catch(() => {
@@ -1447,7 +1473,9 @@ export function App() {
     return null
   }
 
-  return (
+  return showInitialLoadingScreen ? (
+    <InitialLoadingScreen />
+  ) : (
     <div className="catalog-shell-frame">
       <div className={`catalog-shell ${navOpen ? '' : 'nav-collapsed'}`}>
       <aside className="profile-rail">
