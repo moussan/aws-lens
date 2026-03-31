@@ -4777,6 +4777,70 @@ button.overview-tile.clickable.active strong {
   word-break: break-word;
 }
 
+.settings-environment-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.72);
+}
+
+.settings-environment-summary strong,
+.settings-environment-summary span {
+  color: #dbe7f3;
+}
+
+.settings-environment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.settings-environment-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.settings-environment-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.72);
+}
+
+.settings-environment-row strong {
+  color: #f3f7fc;
+}
+
+.settings-environment-row p,
+.settings-environment-row small {
+  margin: 0.2rem 0 0;
+  color: #a8b8ca;
+  display: block;
+}
+
+.settings-environment-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.45rem;
+  min-width: 110px;
+}
+
+.settings-environment-meta code {
+  color: #dbe7f3;
+  font-size: 0.75rem;
+  text-align: right;
+  word-break: break-word;
+}
+
 .page-refresh-overlay {
   position: absolute;
   inset: 0;

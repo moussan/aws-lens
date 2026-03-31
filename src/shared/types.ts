@@ -279,6 +279,46 @@ export type AppReleaseInfo = {
   latestRelease: AppReleaseArtifactInfo
 }
 
+export type EnvironmentToolId =
+  | 'aws-cli'
+  | 'session-manager-plugin'
+  | 'terraform'
+  | 'opentofu'
+  | 'kubectl'
+  | 'docker'
+
+export type EnvironmentToolStatus = 'available' | 'missing' | 'warning'
+
+export type EnvironmentCheckSeverity = 'info' | 'warning' | 'error'
+
+export type EnvironmentToolCheck = {
+  id: EnvironmentToolId
+  label: string
+  status: EnvironmentToolStatus
+  found: boolean
+  required: boolean
+  version: string
+  path: string
+  detail: string
+  remediation: string
+}
+
+export type EnvironmentPermissionCheck = {
+  id: string
+  label: string
+  status: 'ok' | 'warning' | 'error'
+  detail: string
+  remediation: string
+}
+
+export type EnvironmentHealthReport = {
+  checkedAt: string
+  overallSeverity: EnvironmentCheckSeverity
+  summary: string
+  tools: EnvironmentToolCheck[]
+  permissions: EnvironmentPermissionCheck[]
+}
+
 export type Ec2SsmStatus = 'managed-online' | 'managed-offline' | 'not-managed'
 
 export type SsmManagedInstanceSummary = {

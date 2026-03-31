@@ -35,6 +35,7 @@ declare global {
       assumeSavedRoleTarget: (targetId: string) => Promise<unknown>
       listServices: () => Promise<unknown>
       getReleaseInfo: () => Promise<unknown>
+      getEnvironmentHealth: () => Promise<unknown>
       checkForAppUpdates: () => Promise<unknown>
       downloadAppUpdate: () => Promise<unknown>
       installAppUpdate: () => Promise<unknown>

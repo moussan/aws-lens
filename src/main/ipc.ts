@@ -9,6 +9,7 @@ import type { AwsConnection, TerraformCommandRequest, TerraformInputConfiguratio
 import { importAwsConfigFile } from './aws/profiles'
 import { SERVICE_CATALOG } from './catalog'
 import { exportDiagnosticsBundle } from './diagnostics'
+import { getEnvironmentHealthReport } from './environment'
 import { exportEnterpriseAuditEvents, getEnterpriseSettings, listEnterpriseAuditEvents, setEnterpriseAccessMode } from './enterprise'
 import { createHandlerWrapper } from './operations'
 import { checkForAppUpdates, downloadAppUpdate, getReleaseInfo, installAppUpdate } from './releaseCheck'
@@ -236,6 +237,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle('shell:open-external', async (_event, url: string) => wrap(() => shell.openExternal(url)))
   ipcMain.handle('shell:open-path', async (_event, targetPath: string) => wrap(() => shell.openPath(targetPath)))
   ipcMain.handle('app:release-info', async () => wrap(() => getReleaseInfo()))
+  ipcMain.handle('app:environment-health', async () => wrap(() => getEnvironmentHealthReport()))
   ipcMain.handle('app:update:check', async () => wrap(() => checkForAppUpdates()))
   ipcMain.handle('app:update:download', async () => wrap(() => downloadAppUpdate()))
   ipcMain.handle('app:update:install', async () => wrap(() => installAppUpdate()))

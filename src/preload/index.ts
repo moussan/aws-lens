@@ -44,6 +44,7 @@ const awsLensApi = {
   assumeSavedRoleTarget: (targetId: string) => ipcRenderer.invoke('session-hub:assume-target', targetId),
   listServices: () => ipcRenderer.invoke('services:list'),
   getReleaseInfo: () => ipcRenderer.invoke('app:release-info'),
+  getEnvironmentHealth: () => ipcRenderer.invoke('app:environment-health'),
   checkForAppUpdates: () => ipcRenderer.invoke('app:update:check'),
   downloadAppUpdate: () => ipcRenderer.invoke('app:update:download'),
   installAppUpdate: () => ipcRenderer.invoke('app:update:install'),

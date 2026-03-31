@@ -8,6 +8,7 @@ import type {
   AcmCertificateSummary,
   AcmRequestCertificateInput,
   AppDiagnosticsExportResult,
+  EnvironmentHealthReport,
   AppReleaseInfo,
   AssumeRoleResult,
   AssumeRoleRequest,
@@ -859,6 +860,10 @@ export async function exportEnterpriseAuditEvents(): Promise<EnterpriseAuditExpo
 
 export async function getAppReleaseInfo(): Promise<AppReleaseInfo> {
   return unwrap((await rawAwsBridge().getReleaseInfo()) as Wrapped<AppReleaseInfo>)
+}
+
+export async function getEnvironmentHealth(): Promise<EnvironmentHealthReport> {
+  return unwrap((await rawAwsBridge().getEnvironmentHealth()) as Wrapped<EnvironmentHealthReport>)
 }
 
 export async function checkForAppUpdates(): Promise<AppReleaseInfo> {

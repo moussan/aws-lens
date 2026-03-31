@@ -4,6 +4,7 @@ import appLogoUrl from '../../../assets/aws-lens-logo.png'
 import type {
   AppReleaseInfo,
   ComparisonRequest,
+  EnvironmentHealthReport,
   EnterpriseAccessMode,
   EnterpriseAuditEvent,
   NavigationFocus,
@@ -21,6 +22,7 @@ import {
   exportDiagnosticsBundle,
   exportEnterpriseAuditEvents,
   getAppReleaseInfo,
+  getEnvironmentHealth,
   getEnterpriseSettings,
   invalidateAllPageCaches,
   invalidatePageCache,
@@ -353,6 +355,8 @@ export function App() {
   const [credError, setCredError] = useState('')
   const [profileActionMsg, setProfileActionMsg] = useState('')
   const [settingsMessage, setSettingsMessage] = useState('')
+  const [environmentHealth, setEnvironmentHealth] = useState<EnvironmentHealthReport | null>(null)
+  const [environmentBusy, setEnvironmentBusy] = useState(false)
   const [globalWarning, setGlobalWarning] = useState('')
   const [focusMap, setFocusMap] = useState<FocusMap>({})
   const [compareSeed, setCompareSeed] = useState<CompareSeed>(null)
@@ -385,6 +389,24 @@ export function App() {
       // Ignore audit hydration failures in the catalog shell.
     })
   }, [])
+
+  useEffect(() => {
+    if (screen !== 'settings') {
+      return
+    }
+
+    if (environmentHealth || environmentBusy) {
+      return
+    }
+
+    setEnvironmentBusy(true)
+    void getEnvironmentHealth()
+      .then(setEnvironmentHealth)
+      .catch(() => {
+        // Ignore environment validation hydration failures in the shell.
+      })
+      .finally(() => setEnvironmentBusy(false))
+  }, [environmentBusy, environmentHealth, screen])
 
   useEffect(() => {
     if (screen !== 'profiles') {
@@ -855,6 +877,20 @@ export function App() {
     }
   }
 
+  async function handleRefreshEnvironmentHealth(): Promise<void> {
+    setEnvironmentBusy(true)
+    setSettingsMessage('')
+    try {
+      const report = await getEnvironmentHealth()
+      setEnvironmentHealth(report)
+      setSettingsMessage(report.summary)
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setEnvironmentBusy(false)
+    }
+  }
+
   function renderScreenContent(targetScreen: Screen): React.ReactNode {
     const targetService = services.find((service) => service.id === targetScreen)
 
@@ -1161,6 +1197,60 @@ export function App() {
               {releaseInfo?.error && <div className="error-banner">{releaseInfo.error}</div>}
             </section>
           </div>
+
+          <section className="settings-panel-card settings-panel-card-wide">
+            <div className="settings-panel-card__header">
+              <div>
+                <div className="eyebrow">Environment</div>
+                <h3>Machine validation</h3>
+              </div>
+              <div className="settings-action-row">
+                <button type="button" className="accent" disabled={environmentBusy} onClick={() => void handleRefreshEnvironmentHealth()}>
+                  {environmentBusy ? 'Refreshing...' : 'Refresh environment'}
+                </button>
+              </div>
+            </div>
+            <div className="settings-environment-summary">
+              <strong>{environmentHealth?.summary ?? 'Environment checks have not run yet.'}</strong>
+              <span>Status: {environmentHealth?.overallSeverity ?? 'idle'}</span>
+              <span>Checked: {environmentHealth?.checkedAt ? new Date(environmentHealth.checkedAt).toLocaleString() : 'Not checked yet'}</span>
+            </div>
+            <div className="settings-environment-grid">
+              <div className="settings-environment-section">
+                <div className="eyebrow">Tooling</div>
+                {environmentHealth?.tools.map((tool) => (
+                  <div key={tool.id} className="settings-environment-row">
+                    <div>
+                      <strong>{tool.label}</strong>
+                      <p>{tool.detail}</p>
+                      {tool.remediation && <small>{tool.remediation}</small>}
+                    </div>
+                    <div className="settings-environment-meta">
+                      <span className={`settings-status-pill settings-status-pill-${tool.status === 'available' ? 'stable' : tool.status === 'missing' ? 'preview' : 'unknown'}`}>{tool.status}</span>
+                      <code>{tool.version || 'not found'}</code>
+                    </div>
+                  </div>
+                ))}
+                {!environmentHealth && !environmentBusy && <div className="settings-release-notes"><p>No environment report loaded yet.</p></div>}
+              </div>
+              <div className="settings-environment-section">
+                <div className="eyebrow">Permissions</div>
+                {environmentHealth?.permissions.map((item) => (
+                  <div key={item.id} className="settings-environment-row">
+                    <div>
+                      <strong>{item.label}</strong>
+                      <p>{item.detail}</p>
+                      {item.remediation && <small>{item.remediation}</small>}
+                    </div>
+                    <div className="settings-environment-meta">
+                      <span className={`settings-status-pill settings-status-pill-${item.status === 'ok' ? 'stable' : item.status === 'error' ? 'preview' : 'unknown'}`}>{item.status}</span>
+                    </div>
+                  </div>
+                ))}
+                {!environmentHealth && !environmentBusy && <div className="settings-release-notes"><p>No permission report loaded yet.</p></div>}
+              </div>
+            </div>
+          </section>
 
           <section className="settings-panel-card settings-panel-card-wide">
             <div className="settings-panel-card__header">
