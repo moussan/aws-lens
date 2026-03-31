@@ -779,6 +779,39 @@ export function SessionHub({
           </article>
         </div>
       </section>
+
+      <div className="overview-section-title">Example Workflows</div>
+      <section className="panel session-hub-compare-panel">
+        <div className="panel-header">
+          <h3>Typical session scenarios</h3>
+        </div>
+        <div className="session-hub-target-list">
+          <article className="session-hub-target-card">
+            <div className="session-hub-target-head">
+              <div>
+                <strong>Cross-account production inspection</strong>
+                <p>Select a base profile, assume a production read role, inspect inventory, then revert back to the base profile when the review is finished.</p>
+              </div>
+            </div>
+          </article>
+          <article className="session-hub-target-card">
+            <div className="session-hub-target-head">
+              <div>
+                <strong>Compare staging and production posture</strong>
+                <p>Assume or activate both contexts, launch Compare Workspace, and inspect posture or ownership differences without rewriting local AWS config.</p>
+              </div>
+            </div>
+          </article>
+          <article className="session-hub-target-card">
+            <div className="session-hub-target-head">
+              <div>
+                <strong>Validate an assumed role in the terminal</strong>
+                <p>Open a shell from the active session to run `aws sts get-caller-identity`, targeted CLI checks, or emergency diagnostics in the same temporary context.</p>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
     </div>
   )
 }

@@ -362,6 +362,26 @@ export function ComplianceCenter({
         </div>
       </section>
 
+      <section className="panel stack compliance-panel">
+        <div className="panel-header">
+          <div>
+            <div className="eyebrow compliance-panel-eyebrow">Example workflows</div>
+            <h3>How teams use this queue</h3>
+          </div>
+        </div>
+        <div className="selection-list compliance-warning-list">
+          <div className="selection-item compliance-warning-item">
+            <span><strong>Morning security triage:</strong> filter to `high` severity, route into the owning service, and use guided remediation before opening broader inventory screens.</span>
+          </div>
+          <div className="selection-item compliance-warning-item">
+            <span><strong>Secrets rotation follow-up:</strong> review findings tied to Secrets Manager, rotate the secret from the queue, then confirm downstream health in the destination service.</span>
+          </div>
+          <div className="selection-item compliance-warning-item">
+            <span><strong>Read-only audit review:</strong> keep the app in read-only mode, inspect findings and recommended actions, then hand off exact resource identifiers to an operator.</span>
+          </div>
+        </div>
+      </section>
+
       {report?.warnings.length ? (
         <section className="panel stack compliance-panel compliance-warning-panel">
           <div className="panel-header">

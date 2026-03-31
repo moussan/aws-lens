@@ -599,6 +599,29 @@ export function DirectResourceConsole({
         </div>
       </div>
 
+      <section className="direct-section">
+        <div className="direct-section-head">
+          <div>
+            <span className="direct-pane-kicker">Example workflows</span>
+            <h3>When to use direct access</h3>
+          </div>
+        </div>
+        <div className="direct-result-list">
+          <article className="direct-result-row">
+            <strong>Known resource, limited list permissions</strong>
+            <span>Open a Lambda, ECS service, or secret directly when broad inventory listing is blocked but you already know the identifier.</span>
+          </article>
+          <article className="direct-result-row">
+            <strong>Incident triage from an ARN or URL</strong>
+            <span>Paste the resource identifier from a ticket, alert, or audit finding and inspect the payload before jumping into the full console.</span>
+          </article>
+          <article className="direct-result-row">
+            <strong>Fast handoff into a deeper workspace</strong>
+            <span>Use the routed next actions below to move from a one-off lookup into the main service console with focus applied.</span>
+          </article>
+        </div>
+      </section>
+
       {error && <SvcState variant="error" error={error} />}
 
       <div className="direct-main-layout">
