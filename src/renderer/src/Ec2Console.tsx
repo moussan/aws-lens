@@ -76,7 +76,6 @@ import {
   tagEbsVolume,
   tagEc2Snapshot,
   untagEbsVolume,
-  terminateEc2Instances,
   terminateEc2Instance
 } from './ec2Api'
 import { ConfirmButton } from './ConfirmButton'
@@ -829,9 +828,7 @@ export function Ec2Console({
     }
 
     await runEc2Mutation(async () => {
-      const result = action === 'terminate'
-        ? await terminateEc2Instances(connection, selectedInstanceIds)
-        : await runEc2BulkInstanceAction(connection, selectedInstanceIds, action)
+      const result = await runEc2BulkInstanceAction(connection, selectedInstanceIds, action)
       setMsg(formatBulkActionMessage(action, result.attempted, result.succeeded, result.failed))
       await reload()
     })
@@ -1715,16 +1712,6 @@ export function Ec2Console({
                     <button className="ec2-action-btn start" type="button" onClick={() => void doBulkAction('start')}>Bulk Start</button>
                     <ConfirmButton className="ec2-action-btn stop" type="button" onConfirm={() => void doBulkAction('stop')}>Bulk Stop</ConfirmButton>
                     <ConfirmButton className="ec2-action-btn" type="button" onConfirm={() => void doBulkAction('reboot')}>Bulk Reboot</ConfirmButton>
-                    <ConfirmButton
-                      className="ec2-action-btn remove"
-                      type="button"
-                      onConfirm={() => void doBulkAction('terminate')}
-                      modalTitle="Bulk terminate instances"
-                      modalBody={`Terminate ${selectedInstanceIds.length} selected instance${selectedInstanceIds.length === 1 ? '' : 's'}?`}
-                      confirmButtonLabel="Terminate instances"
-                    >
-                      Bulk Terminate
-                    </ConfirmButton>
                     <button className="ec2-action-btn" type="button" onClick={() => setSelectedInstanceIds([])}>Clear</button>
                   </div>
                 </div>

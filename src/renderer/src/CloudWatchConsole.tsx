@@ -118,6 +118,10 @@ function summarizeResult(result: CloudWatchQueryExecutionResult): string {
   return `${result.rows.length} rows, ${formatBytes(result.statistics.bytesScanned)} scanned`
 }
 
+function shouldRetryWiderWindow(result: CloudWatchQueryExecutionResult, timeRange: TimeRange): boolean {
+  return timeRange < 168 && result.rows.length === 0 && result.statistics.bytesScanned === 0
+}
+
 function Sparkline({ points, unit, width = 140, height = 36 }: { points: CloudWatchDatapoint[]; unit: string; width?: number; height?: number }) {
   if (points.length < 2) return <span className="cw-no-data">No data</span>
   const values = points.map((point) => point.value)
@@ -373,19 +377,32 @@ export function CloudWatchConsole({ connection, focusEc2Instance }: { connection
     setQueryFeedback('')
     const started = Date.now()
     try {
-      const result = await runCloudWatchQuery(connection, {
+      const executeQueryForWindow = (hours: TimeRange) => runCloudWatchQuery(connection, {
         queryString,
         logGroupNames,
-        startTimeMs: Date.now() - timeRange * 60 * 60 * 1000,
+        startTimeMs: Date.now() - hours * 60 * 60 * 1000,
         endTimeMs: Date.now(),
         limit: 100
       })
+      const initialResult = await executeQueryForWindow(timeRange)
+      let result = initialResult
+      let feedbackPrefix = ''
+
+      if (shouldRetryWiderWindow(initialResult, timeRange)) {
+        const widenedResult = await executeQueryForWindow(168)
+        if (widenedResult.rows.length > 0 || widenedResult.statistics.bytesScanned > 0) {
+          result = widenedResult
+          setTimeRange(168)
+          feedbackPrefix = 'No events were scanned in the original window, so the investigation was retried over 7 days. '
+        }
+      }
+
       setQueryResult(result)
       setQueryDraft(queryString)
       setQueryServiceHint(serviceHint)
       setQuerySourceLabel(sourceLabel)
       setSelectedQueryLogGroups(logGroupNames)
-      setQueryFeedback(`Query completed. ${summarizeResult(result)}.`)
+      setQueryFeedback(`${feedbackPrefix}Query completed. ${summarizeResult(result)}.`)
       await recordCloudWatchQueryHistory({
         queryString,
         logGroupNames,
