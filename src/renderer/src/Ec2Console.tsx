@@ -8,18 +8,22 @@ import type {
   BastionAmiOption,
   BastionConnectionInfo,
   CloudTrailEventSummary,
+  Ec2BulkInstanceAction,
   Ec2IamAssociation,
   Ec2InstanceAction,
   Ec2InstanceDetail,
   Ec2InstanceSummary,
   Ec2InstanceTypeOption,
   Ec2Recommendation,
+  Ec2SshKeySuggestion,
   Ec2SnapshotSummary,
   Ec2VpcDetail,
   EbsTempInspectionEnvironment,
   EbsTempInspectionProgress,
   EbsVolumeDetail,
   EbsVolumeSummary,
+  GovernanceTagDefaults,
+  GovernanceTagKey,
   KeyPairSummary,
   SecurityGroupSummary,
   SsmCommandExecutionResult,
@@ -29,7 +33,7 @@ import type {
   SsmSessionSummary,
   SubnetSummary
 } from '@shared/types'
-import { listKeyPairs, listSecurityGroupsForVpc, listSubnets, lookupCloudTrailEventsByResource } from './api'
+import { getGovernanceTagDefaults, listKeyPairs, listSecurityGroupsForVpc, listSubnets, lookupCloudTrailEventsByResource } from './api'
 import {
   attachEbsVolume,
   attachIamProfile,
@@ -54,6 +58,7 @@ import {
   listEbsVolumes,
   listEc2Instances,
   listEc2Snapshots,
+  listEc2SshKeySuggestions,
   listInstanceTypes,
   listPopularBastionAmis,
   listSsmManagedInstances,
@@ -62,6 +67,7 @@ import {
   removeIamProfile,
   replaceIamProfile,
   resizeEc2Instance,
+  runEc2BulkInstanceAction,
   runEc2InstanceAction,
   sendSsmCommand,
   sendSshPublicKey,
@@ -104,9 +110,33 @@ type VolumeWorkflowStatus = {
   error?: string
 }
 
+function formatBulkActionMessage(
+  action: Ec2BulkInstanceAction,
+  attempted: number,
+  succeeded: number,
+  failed: number
+): string {
+  const verb = action === 'terminate' ? 'terminate' : action
+  const base = `${verb} sent to ${succeeded}/${attempted} instance${attempted === 1 ? '' : 's'}`
+
+  return failed > 0 ? `${base}; ${failed} failed.` : `${base}.`
+}
+
+function resolveConfiguredGovernanceTags(governanceDefaults: GovernanceTagDefaults | null): Record<string, string> {
+  if (!governanceDefaults?.inheritByDefault) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    GOVERNANCE_TAG_KEYS
+      .map((key) => [key, governanceDefaults.values[key]?.trim() ?? ''] as const)
+      .filter(([, value]) => Boolean(value))
+  )
+}
+
 const BASTION_PURPOSE_TAG = 'aws-lens:purpose'
 const BASTION_TARGET_INSTANCE_TAG = 'aws-lens:bastion-target-instance-id'
-const GOVERNANCE_TAG_KEYS = ['Owner', 'Environment', 'CostCenter']
+const GOVERNANCE_TAG_KEYS: GovernanceTagKey[] = ['Owner', 'Environment', 'Project', 'CostCenter']
 
 const SSM_COMMAND_PRESETS = [
   {
@@ -377,6 +407,7 @@ export function Ec2Console({
   /* ── Instances state ─────────────────────────────────────── */
   const [instances, setInstances] = useState<Ec2InstanceSummary[]>([])
   const [selectedId, setSelectedId] = useState('')
+  const [selectedInstanceIds, setSelectedInstanceIds] = useState<string[]>([])
   const [detail, setDetail] = useState<Ec2InstanceDetail | null>(null)
   const [iamAssoc, setIamAssoc] = useState<Ec2IamAssociation | null>(null)
   const [vpcDetail, setVpcDetail] = useState<Ec2VpcDetail | null>(null)
@@ -386,6 +417,9 @@ export function Ec2Console({
   const [iamName, setIamName] = useState('')
   const [sshUser, setSshUser] = useState('ec2-user')
   const [sshKey, setSshKey] = useState('')
+  const [sshSuggestions, setSshSuggestions] = useState<Ec2SshKeySuggestion[]>([])
+  const [sshSuggestionsLoading, setSshSuggestionsLoading] = useState(false)
+  const [governanceDefaults, setGovernanceDefaults] = useState<GovernanceTagDefaults | null>(null)
   const [showDescribe, setShowDescribe] = useState(false)
   const [ssmManagedInstances, setSsmManagedInstances] = useState<SsmManagedInstanceSummary[]>([])
   const [ssmTarget, setSsmTarget] = useState<SsmConnectionTarget | null>(null)
@@ -535,12 +569,17 @@ export function Ec2Console({
         ? selectedId
         : (inst[0]?.instanceId ?? '')
       setSelectedId(resolvedInstanceId)
+      setSelectedInstanceIds((current) => {
+        const next = current.filter((instanceId) => inst.some((instance) => instance.instanceId === instanceId))
+        return next.length > 0 ? next : (resolvedInstanceId ? [resolvedInstanceId] : [])
+      })
       if (resolvedInstanceId) {
         await selectInstance(resolvedInstanceId, { preserveExisting: true, reason: 'background' })
       } else {
         setDetail(null)
         setIamAssoc(null)
         setVpcDetail(null)
+        setLinkedBastions([])
         setSsmTarget(null)
         setSsmSessions([])
       }
@@ -601,6 +640,57 @@ export function Ec2Console({
     volumeDetailNameRef.current = volumeDetail?.name ?? ''
   }, [volumeDetail?.name])
 
+  useEffect(() => {
+    void getGovernanceTagDefaults()
+      .then(setGovernanceDefaults)
+      .catch(() => {
+        setGovernanceDefaults(null)
+      })
+  }, [connection.sessionId])
+
+  useEffect(() => {
+    const preferredKeyName = detail?.keyName?.trim()
+
+    if (!preferredKeyName || preferredKeyName === '-') {
+      setSshSuggestions([])
+      setSshSuggestionsLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setSshSuggestionsLoading(true)
+
+    void listEc2SshKeySuggestions(preferredKeyName)
+      .then((suggestions) => {
+        if (cancelled) {
+          return
+        }
+
+        setSshSuggestions(suggestions.slice(0, 6))
+        const preferredSuggestion = suggestions.find((suggestion) => suggestion.keyNameMatch && suggestion.hasPublicKey)
+          ?? suggestions.find((suggestion) => suggestion.hasPublicKey)
+          ?? suggestions[0]
+
+        if (preferredSuggestion && !sshKey) {
+          setSshKey((current) => current || preferredSuggestion.privateKeyPath)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSshSuggestions([])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSshSuggestionsLoading(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [detail?.keyName])
+
   useEffect(() => subscribeToTempVolumeProgress((progress) => {
     setVolumeWorkflowStatus((current) => ({
       mode: progress.mode,
@@ -643,6 +733,9 @@ export function Ec2Console({
 
   async function selectInstance(id: string, options?: { preserveExisting?: boolean; reason?: 'selection' | 'background' | 'manual' }) {
     setSelectedId(id)
+    if ((options?.reason ?? 'selection') === 'selection') {
+      setSelectedInstanceIds([id])
+    }
     setMsg('')
     if (!options?.preserveExisting) {
       setDetail(null)
@@ -702,6 +795,43 @@ export function Ec2Console({
     } catch (error) {
       setMsg(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  function toggleInstanceSelection(instanceId: string): void {
+    setSelectedInstanceIds((current) =>
+      current.includes(instanceId)
+        ? current.filter((selectedInstanceId) => selectedInstanceId !== instanceId)
+        : [...current, instanceId]
+    )
+  }
+
+  function toggleAllVisibleInstances(): void {
+    const visibleInstanceIds = filteredInstances.map((instance) => instance.instanceId)
+
+    if (!visibleInstanceIds.length) {
+      return
+    }
+
+    const allSelected = visibleInstanceIds.every((instanceId) => selectedInstanceIds.includes(instanceId))
+    setSelectedInstanceIds((current) => {
+      if (allSelected) {
+        return current.filter((instanceId) => !visibleInstanceIds.includes(instanceId))
+      }
+
+      return [...new Set([...current, ...visibleInstanceIds])]
+    })
+  }
+
+  async function doBulkAction(action: Ec2BulkInstanceAction): Promise<void> {
+    if (!selectedInstanceIds.length) {
+      return
+    }
+
+    await runEc2Mutation(async () => {
+      const result = await runEc2BulkInstanceAction(connection, selectedInstanceIds, action)
+      setMsg(formatBulkActionMessage(action, result.attempted, result.succeeded, result.failed))
+      await reload()
+    })
   }
 
   async function doAction(action: Ec2InstanceAction) {
@@ -798,6 +928,26 @@ export function Ec2Console({
     })
   }
 
+  async function doApplyGovernanceTagsToSnapshot(): Promise<void> {
+    if (!selectedSnapId) {
+      return
+    }
+
+    const tags = resolveConfiguredGovernanceTags(governanceDefaults)
+    if (!Object.keys(tags).length) {
+      setMsg(governanceDefaults?.inheritByDefault === false
+        ? 'Governance tag inheritance is disabled in Settings.'
+        : 'No governance tag defaults are configured in Settings.')
+      return
+    }
+
+    await runEc2Mutation(async () => {
+      await tagEc2Snapshot(connection, selectedSnapId, tags)
+      setMsg(`Applied ${Object.keys(tags).length} governance tags to ${selectedSnapId}`)
+      setSnapshots(await listEc2Snapshots(connection))
+    })
+  }
+
   async function refreshSelectedVolume(): Promise<void> {
     if (!selectedVolumeId) {
       return
@@ -816,6 +966,26 @@ export function Ec2Console({
       setVolumeTagKey('')
       setVolumeTagValue('')
       setMsg(`Tag ${volumeTagKey.trim()} applied to ${volumeDetail.volumeId}`)
+      await refreshSelectedVolume()
+    })
+  }
+
+  async function doApplyGovernanceTagsToVolume(): Promise<void> {
+    if (!volumeDetail) {
+      return
+    }
+
+    const tags = resolveConfiguredGovernanceTags(governanceDefaults)
+    if (!Object.keys(tags).length) {
+      setMsg(governanceDefaults?.inheritByDefault === false
+        ? 'Governance tag inheritance is disabled in Settings.'
+        : 'No governance tag defaults are configured in Settings.')
+      return
+    }
+
+    await runEc2Mutation(async () => {
+      await tagEbsVolume(connection, volumeDetail.volumeId, tags)
+      setMsg(`Applied ${Object.keys(tags).length} governance tags to ${volumeDetail.volumeId}`)
       await refreshSelectedVolume()
     })
   }
@@ -1142,8 +1312,10 @@ export function Ec2Console({
 
   async function doSendKey() {
     if (!selectedId || !sshKey || !detail) return
-    const ok = await sendSshPublicKey(connection, selectedId, sshUser, sshKey, detail.availabilityZone)
-    setMsg(ok ? 'Public key sent (valid 60s)' : 'Failed to send key')
+    await runEc2Mutation(async () => {
+      const ok = await sendSshPublicKey(connection, selectedId, sshUser, sshKey, detail.availabilityZone)
+      setMsg(ok ? 'Public key sent (valid 60s)' : 'Failed to send key')
+    })
   }
 
   async function handleBrowseSshKey() {
@@ -1306,6 +1478,9 @@ export function Ec2Console({
   }
 
   const activeCols = COLUMNS.filter(c => visibleCols.has(c.key))
+  const visibleInstanceIds = filteredInstances.map((instance) => instance.instanceId)
+  const selectedVisibleCount = visibleInstanceIds.filter((instanceId) => selectedInstanceIds.includes(instanceId)).length
+  const allVisibleSelected = visibleInstanceIds.length > 0 && selectedVisibleCount === visibleInstanceIds.length
 
   /* ── Derived data ────────────────────────────────────────── */
   const selectedInstance = instances.find((instance) => instance.instanceId === selectedId) ?? null
@@ -1328,24 +1503,39 @@ export function Ec2Console({
   const volumeWorkflowBusy = volumeWorkflowStatus !== null && !['completed', 'failed'].includes(volumeWorkflowStatus.stage)
   const ssmHistory = selectedId ? (ssmCommandHistory[selectedId] ?? []) : []
   const ssmOnlineCount = ssmManagedInstances.filter((instance) => instance.pingStatus === 'Online').length
+  const configuredGovernanceTags = resolveConfiguredGovernanceTags(governanceDefaults)
+  const configuredGovernanceTagCount = Object.keys(configuredGovernanceTags).length
   const volumeWarnings = volumeDetail ? [
     !volumeDetail.encrypted && volumeDetail.status === 'available-orphan' ? 'High priority: orphan volume is unencrypted.' : '',
     volumeDetail.type === 'gp2' ? 'Recommendation: migrate gp2 to gp3 for lower cost and more predictable performance.' : '',
     volumeDetail.status === 'available-orphan' && volumeDetail.createTime !== '-' && (Date.now() - new Date(volumeDetail.createTime).getTime()) > 1000 * 60 * 60 * 24 * 14
       ? 'Warning: orphan volume looks stale and has been unattached for more than 14 days.'
       : '',
-    GOVERNANCE_TAG_KEYS.some((key) => !(volumeDetail.tags[key] || '').trim()) ? 'Warning: missing governance tags (Owner, Environment, or CostCenter).' : ''
+    GOVERNANCE_TAG_KEYS.some((key) => !(volumeDetail.tags[key] || '').trim()) ? 'Warning: missing governance tags (Owner, Environment, Project, or CostCenter).' : ''
   ].filter(Boolean) : []
   const runningInstancesCount = instances.filter((instance) => instance.state === 'running').length
   const stoppedInstancesCount = instances.filter((instance) => instance.state === 'stopped').length
   const orphanVolumeCount = volumes.filter((volume) => volume.status === 'available-orphan').length
   const snapshotReadyCount = snapshots.filter((snapshot) => snapshot.state === 'completed').length
+  const primarySshSuggestion = sshSuggestions.find((suggestion) => suggestion.keyNameMatch && suggestion.hasPublicKey)
+    ?? sshSuggestions.find((suggestion) => suggestion.hasPublicKey)
+    ?? sshSuggestions[0]
+  const activeSshKeyPath = sshKey || primarySshSuggestion?.privateKeyPath || (detail?.keyName ? `~/.ssh/${detail.keyName}.pem` : '')
   const heroStats = mainTab === 'instances'
     ? [
         { label: 'Fleet', value: String(instances.length), detail: `${runningInstancesCount} running / ${stoppedInstancesCount} stopped`, tone: 'accent' },
         { label: 'SSM Coverage', value: `${ssmOnlineCount}/${ssmManagedInstances.length}`, detail: 'managed instances online', tone: 'info' },
         { label: 'Rightsizing', value: String(recommendations.length), detail: 'active recommendations', tone: recommendations.length ? 'warning' : 'default' },
-        { label: 'Selection', value: selectedInstance?.name && selectedInstance.name !== '-' ? selectedInstance.name : (selectedId || 'No instance selected'), detail: selectedInstance ? `${selectedInstance.type} in ${selectedInstance.availabilityZone}` : 'pick an instance to inspect', tone: 'default' }
+        {
+          label: 'Selection',
+          value: selectedInstanceIds.length > 1
+            ? `${selectedInstanceIds.length} instances`
+            : (selectedInstance?.name && selectedInstance.name !== '-' ? selectedInstance.name : (selectedId || 'No instance selected')),
+          detail: selectedInstanceIds.length > 1
+            ? `${selectedVisibleCount} of ${filteredInstances.length} visible rows selected`
+            : (selectedInstance ? `${selectedInstance.type} in ${selectedInstance.availabilityZone}` : 'pick an instance to inspect'),
+          tone: 'default'
+        }
       ]
     : mainTab === 'volumes'
       ? [
@@ -1362,7 +1552,7 @@ export function Ec2Console({
         ]
 
   const sshCmd = detail
-    ? `ssh -i ${quoteSshArg(sshKey || `~/.ssh/${detail.keyName}.pem`)} ${sshUser}@${detail.publicIp !== '-' ? detail.publicIp : detail.privateIp}`
+    ? `ssh -i ${quoteSshArg(activeSshKeyPath)} ${sshUser}@${detail.publicIp !== '-' ? detail.publicIp : detail.privateIp}`
     : ''
 
   if (loading) return <SvcState variant="loading" resourceName="EC2" />
@@ -1505,17 +1695,39 @@ export function Ec2Console({
               <div className="ec2-table-shell-header">
                 <div>
                   <h3>Instance Inventory</h3>
-                  <p>{filteredInstances.length} visible rows across {activeCols.length} active columns.</p>
+                  <p>{filteredInstances.length} visible rows across {activeCols.length} active columns. {selectedInstanceIds.length} selected for bulk actions.</p>
                 </div>
                 <div className="ec2-table-shell-meta">
                   <span className="ec2-workspace-badge">{runningInstancesCount} running</span>
                   <span className="ec2-workspace-badge">{ssmOnlineCount} SSM online</span>
                 </div>
               </div>
+              {selectedInstanceIds.length > 0 && (
+                <div className="ec2-selection-toolbar">
+                  <div className="ec2-selection-summary">
+                    <strong>{selectedInstanceIds.length} selected</strong>
+                    <span>{selectedVisibleCount} visible in the current filter</span>
+                  </div>
+                  <div className="ec2-selection-actions">
+                    <button className="ec2-action-btn start" type="button" onClick={() => void doBulkAction('start')}>Bulk Start</button>
+                    <ConfirmButton className="ec2-action-btn stop" type="button" onConfirm={() => void doBulkAction('stop')}>Bulk Stop</ConfirmButton>
+                    <ConfirmButton className="ec2-action-btn" type="button" onConfirm={() => void doBulkAction('reboot')}>Bulk Reboot</ConfirmButton>
+                    <button className="ec2-action-btn" type="button" onClick={() => setSelectedInstanceIds([])}>Clear</button>
+                  </div>
+                </div>
+              )}
               <div className="ec2-table-area">
               <table className="ec2-data-table">
                 <thead>
                   <tr>
+                    <th className="ec2-select-col">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={() => toggleAllVisibleInstances()}
+                        aria-label="Select all visible instances"
+                      />
+                    </th>
                     {activeCols.map(col => (
                       <th key={col.key}>{col.label}</th>
                     ))}
@@ -1524,12 +1736,25 @@ export function Ec2Console({
                 <tbody>
                   {filteredInstances.map(inst => {
                     const rec = recommendationMap.get(inst.instanceId)
+                    const isBulkSelected = selectedInstanceIds.includes(inst.instanceId)
                     return (
                       <tr
                         key={inst.instanceId}
-                        className={inst.instanceId === selectedId ? 'active' : ''}
+                        className={[
+                          inst.instanceId === selectedId ? 'active' : '',
+                          isBulkSelected ? 'bulk-selected' : ''
+                        ].filter(Boolean).join(' ')}
                         onClick={() => void selectInstance(inst.instanceId)}
                       >
+                        <td className="ec2-select-col">
+                          <input
+                            type="checkbox"
+                            checked={isBulkSelected}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={() => toggleInstanceSelection(inst.instanceId)}
+                            aria-label={`Select ${inst.instanceId}`}
+                          />
+                        </td>
                         {activeCols.map(col => (
                           <td key={col.key}>
                             {col.key === 'state'
@@ -1612,6 +1837,9 @@ export function Ec2Console({
                   {/* Actions */}
                   <div className="ec2-sidebar-section">
                     <h3>Actions</h3>
+                    {selectedInstanceIds.length > 1 && (
+                      <div className="ec2-sidebar-hint">Bulk actions target {selectedInstanceIds.length} selected instances. Sidebar actions still apply to the primary selection only.</div>
+                    )}
                     <div className="ec2-actions-grid">
                       <button className="ec2-action-btn" type="button" onClick={() => void doDescribe()}>Describe</button>
                       {!isTerminatedInstance && <button className="ec2-action-btn start" type="button" onClick={() => void doAction('start')}>Start</button>}
@@ -1821,9 +2049,29 @@ export function Ec2Console({
                       </div>
                       <div className="ec2-connect-row">
                         <span className="ec2-connect-label">PEM key</span>
-                        <div className="ec2-pem-row">
-                          <input value={sshKey} onChange={e => setSshKey(e.target.value)} placeholder="path or key" />
-                          <button className="ec2-action-btn" type="button" onClick={() => void handleBrowseSshKey()}>Browse</button>
+                        <div className="ec2-connect-field">
+                          <div className="ec2-pem-row">
+                            <input value={sshKey} onChange={e => setSshKey(e.target.value)} placeholder="path or public key" />
+                            <button className="ec2-action-btn" type="button" onClick={() => void handleBrowseSshKey()}>Browse</button>
+                          </div>
+                          {(sshSuggestionsLoading || sshSuggestions.length > 0) && (
+                            <div className="ec2-ssh-suggestions">
+                              {sshSuggestionsLoading && <span className="ec2-ssh-suggestion-note">Scanning local SSH keys...</span>}
+                              {sshSuggestions.map((suggestion) => (
+                                <button
+                                  key={suggestion.privateKeyPath}
+                                  className={`ec2-ssh-suggestion ${sshKey === suggestion.privateKeyPath ? 'active' : ''}`}
+                                  type="button"
+                                  onClick={() => setSshKey(suggestion.privateKeyPath)}
+                                >
+                                  <span>{suggestion.label}</span>
+                                  <span className="ec2-ssh-suggestion-note">
+                                    {suggestion.hasPublicKey ? 'ready for EC2 Instance Connect' : 'SSH only, no .pub file'}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div className="ec2-connect-btns">
@@ -2282,10 +2530,14 @@ export function Ec2Console({
                       )}
                       {warning.includes('governance tags') && (
                         <button className="ec2-action-btn" type="button" onClick={() => {
+                          if (configuredGovernanceTagCount > 0) {
+                            void doApplyGovernanceTagsToVolume()
+                            return
+                          }
                           setVolumeTagKey('Owner')
                           setVolumeTagValue('')
                         }}>
-                          Add Tags
+                          {configuredGovernanceTagCount > 0 ? 'Apply Defaults' : 'Add Tags'}
                         </button>
                       )}
                     </div>
@@ -2321,6 +2573,9 @@ export function Ec2Console({
                 <div className="ec2-inline" style={{ marginTop: 10 }}>
                   <input placeholder="Tag key" value={volumeTagKey} onChange={(e) => setVolumeTagKey(e.target.value)} style={{ width: 140 }} />
                   <input placeholder="Tag value" value={volumeTagValue} onChange={(e) => setVolumeTagValue(e.target.value)} style={{ width: 220 }} />
+                  <button className="ec2-action-btn" type="button" onClick={() => void doApplyGovernanceTagsToVolume()} disabled={configuredGovernanceTagCount === 0}>
+                    Apply Defaults
+                  </button>
                   <button className="ec2-action-btn apply" type="button" onClick={() => void doTagVolume()}>
                     Tag Volume
                   </button>
@@ -2442,6 +2697,7 @@ export function Ec2Console({
                 <div className="ec2-inline">
                   <input placeholder="Key" value={tagKey} onChange={(e) => setTagKey(e.target.value)} style={{ width: 120 }} />
                   <input placeholder="Value" value={tagValue} onChange={(e) => setTagValue(e.target.value)} style={{ width: 180 }} />
+                  <button type="button" onClick={() => void doApplyGovernanceTagsToSnapshot()} disabled={configuredGovernanceTagCount === 0}>Apply Defaults</button>
                   <button type="button" onClick={() => void doTagSnap()}>Add Tag</button>
                 </div>
               </div>
@@ -2453,6 +2709,15 @@ export function Ec2Console({
               <div className="ec2-form">
                 <label>Volume ID<input value={snapVolume} onChange={(e) => setSnapVolume(e.target.value)} placeholder="vol-..." /></label>
                 <label>Description<input value={snapDesc} onChange={(e) => setSnapDesc(e.target.value)} placeholder="Snapshot description" /></label>
+              </div>
+              <div className="ec2-sidebar-hint" style={{ marginBottom: 10 }}>
+                {governanceDefaults === null
+                  ? 'Governance tag defaults are unavailable until the settings store loads.'
+                  : governanceDefaults.inheritByDefault
+                  ? configuredGovernanceTagCount > 0
+                    ? `This snapshot will inherit ${configuredGovernanceTagCount} saved governance tag defaults.`
+                    : 'Governance tag inheritance is enabled, but no default values are configured yet.'
+                  : 'Governance tag inheritance is currently disabled in Settings.'}
               </div>
               <button type="button" onClick={() => void doCreateSnap()}>Create Snapshot</button>
             </div>

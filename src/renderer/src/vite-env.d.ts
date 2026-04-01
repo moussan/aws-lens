@@ -1,16 +1,27 @@
 /// <reference types="vite/client" />
 
 import type {
+  AwsCapabilitySubject,
   AppSettings,
   ComparisonRequest,
   AssumeRoleRequest,
   AwsAssumeRoleTarget,
   AwsConnection,
   BastionLaunchConfig,
+  CloudWatchQueryFilter,
+  CloudWatchQueryExecutionInput,
+  CloudWatchQueryHistoryInput,
+  CloudWatchSavedQueryInput,
+  DbConnectionResolveInput,
+  DbConnectionPresetFilter,
+  DbConnectionPresetInput,
+  DbVaultCredentialInput,
+  Ec2BulkInstanceAction,
   Ec2InstanceAction,
   EbsTempInspectionProgress,
   EcsFargateServiceConfig,
   LambdaCreateConfig,
+  Route53HostedZoneCreateInput,
   SsmSendCommandRequest,
   SsmStartSessionRequest,
   SnapshotLaunchConfig,
@@ -35,6 +46,23 @@ declare global {
       assumeRoleSession: (request: AssumeRoleRequest) => Promise<unknown>
       assumeSavedRoleTarget: (targetId: string) => Promise<unknown>
       listServices: () => Promise<unknown>
+      getGovernanceTagDefaults: () => Promise<unknown>
+      updateGovernanceTagDefaults: (update: unknown) => Promise<unknown>
+      listCloudWatchSavedQueries: (filter?: CloudWatchQueryFilter) => Promise<unknown>
+      saveCloudWatchSavedQuery: (input: CloudWatchSavedQueryInput) => Promise<unknown>
+      deleteCloudWatchSavedQuery: (id: string) => Promise<unknown>
+      listCloudWatchQueryHistory: (filter?: CloudWatchQueryFilter) => Promise<unknown>
+      recordCloudWatchQueryHistory: (input: CloudWatchQueryHistoryInput) => Promise<unknown>
+      clearCloudWatchQueryHistory: (filter?: CloudWatchQueryFilter) => Promise<unknown>
+      listDbConnectionPresets: (filter?: DbConnectionPresetFilter) => Promise<unknown>
+      saveDbConnectionPreset: (input: DbConnectionPresetInput) => Promise<unknown>
+      deleteDbConnectionPreset: (id: string) => Promise<unknown>
+      markDbConnectionPresetUsed: (id: string) => Promise<unknown>
+      listDbVaultCredentials: () => Promise<unknown>
+      saveDbVaultCredential: (input: DbVaultCredentialInput) => Promise<unknown>
+      deleteDbVaultCredential: (name: string) => Promise<unknown>
+      resolveDbConnectionMaterial: (connection: AwsConnection, input: DbConnectionResolveInput) => Promise<unknown>
+      getAwsCapabilitySnapshot: (region: string, subjects?: AwsCapabilitySubject[]) => Promise<unknown>
       getReleaseInfo: () => Promise<unknown>
       getAppSettings: () => Promise<unknown>
       updateAppSettings: (update: Partial<AppSettings>) => Promise<unknown>
@@ -57,7 +85,9 @@ declare global {
       deleteEbsVolume: (connection: AwsConnection, volumeId: string) => Promise<unknown>
       modifyEbsVolume: (connection: AwsConnection, volumeId: string, request: unknown) => Promise<unknown>
       runEc2InstanceAction: (connection: AwsConnection, instanceId: string, action: Ec2InstanceAction) => Promise<unknown>
+      runEc2BulkInstanceAction: (connection: AwsConnection, instanceIds: string[], action: Ec2BulkInstanceAction) => Promise<unknown>
       terminateEc2Instance: (connection: AwsConnection, instanceId: string) => Promise<unknown>
+      terminateEc2Instances: (connection: AwsConnection, instanceIds: string[]) => Promise<unknown>
       resizeEc2Instance: (connection: AwsConnection, instanceId: string, instanceType: string) => Promise<unknown>
       listInstanceTypes: (connection: AwsConnection, architecture?: string, currentGenerationOnly?: boolean) => Promise<unknown>
       listEc2Snapshots: (connection: AwsConnection) => Promise<unknown>
@@ -89,11 +119,13 @@ declare global {
       listCloudWatchMetrics: (connection: AwsConnection) => Promise<unknown>
       getEc2MetricSeries: (connection: AwsConnection, instanceId: string) => Promise<unknown>
       listCloudWatchLogGroups: (connection: AwsConnection) => Promise<unknown>
-      listCloudWatchRecentEvents: (connection: AwsConnection, logGroupName: string) => Promise<unknown>
+      listCloudWatchRecentEvents: (connection: AwsConnection, logGroupName: string, periodHours?: number) => Promise<unknown>
       listEc2InstanceMetrics: (connection: AwsConnection, instanceId: string) => Promise<unknown>
       getMetricStatistics: (connection: AwsConnection, metrics: unknown[], periodHours: number) => Promise<unknown>
       getEc2AllMetricSeries: (connection: AwsConnection, instanceId: string, periodHours: number) => Promise<unknown>
+      runCloudWatchQuery: (connection: AwsConnection, input: CloudWatchQueryExecutionInput) => Promise<unknown>
       listRoute53HostedZones: (connection: AwsConnection) => Promise<unknown>
+      createRoute53HostedZone: (connection: AwsConnection, input: Route53HostedZoneCreateInput) => Promise<unknown>
       listRoute53Records: (connection: AwsConnection, hostedZoneId: string) => Promise<unknown>
       upsertRoute53Record: (connection: AwsConnection, hostedZoneId: string, record: unknown) => Promise<unknown>
       deleteRoute53Record: (connection: AwsConnection, hostedZoneId: string, record: unknown) => Promise<unknown>
@@ -102,6 +134,7 @@ declare global {
       lookupCloudTrailEventsByResource: (connection: AwsConnection, resourceName: string, startTime: string, endTime: string) => Promise<unknown>
       getOverviewMetrics: (connection: AwsConnection, regions: string[]) => Promise<unknown>
       getOverviewStatistics: (connection: AwsConnection) => Promise<unknown>
+      getOverviewAccountContext: (connection: AwsConnection) => Promise<unknown>
       getComplianceReport: (connection: AwsConnection) => Promise<unknown>
       getRelationshipMap: (connection: AwsConnection) => Promise<unknown>
       searchByTag: (connection: AwsConnection, tagKey: string, tagValue?: string) => Promise<unknown>
@@ -109,6 +142,7 @@ declare global {
       openExternalUrl: (url: string) => Promise<unknown>
       openPath: (targetPath: string) => Promise<unknown>
       chooseEc2SshKey: () => Promise<unknown>
+      listEc2SshKeySuggestions: (preferredKeyName?: string) => Promise<unknown>
       getEnterpriseSettings: () => Promise<unknown>
       setEnterpriseAccessMode: (accessMode: 'read-only' | 'operator') => Promise<unknown>
       listEnterpriseAuditEvents: () => Promise<unknown>

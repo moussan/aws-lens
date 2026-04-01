@@ -544,6 +544,33 @@ export type Ec2InstanceDetail = {
 
 export type Ec2InstanceAction = 'start' | 'stop' | 'reboot'
 
+export type Ec2BulkInstanceAction = Ec2InstanceAction | 'terminate'
+
+export type Ec2BulkInstanceActionItemResult = {
+  instanceId: string
+  name: string
+  action: Ec2BulkInstanceAction
+  status: 'success' | 'failed'
+  detail: string
+}
+
+export type Ec2BulkInstanceActionResult = {
+  action: Ec2BulkInstanceAction
+  attempted: number
+  succeeded: number
+  failed: number
+  results: Ec2BulkInstanceActionItemResult[]
+}
+
+export type Ec2SshKeySuggestion = {
+  privateKeyPath: string
+  publicKeyPath: string
+  label: string
+  source: 'matched-key-name' | 'discovered'
+  keyNameMatch: boolean
+  hasPublicKey: boolean
+}
+
 export type Ec2SnapshotSummary = {
   snapshotId: string
   volumeId: string
@@ -948,6 +975,231 @@ export type ServiceId =
   | 'kms'
   | 'waf'
 
+export type GovernanceTagKey = 'Owner' | 'Environment' | 'Project' | 'CostCenter'
+
+export type GovernanceTagDefaults = {
+  inheritByDefault: boolean
+  values: Record<GovernanceTagKey, string>
+  updatedAt: string
+}
+
+export type GovernanceTagDefaultsUpdate = {
+  inheritByDefault?: boolean
+  values?: Partial<Record<GovernanceTagKey, string>>
+}
+
+export type CloudWatchQueryFilter = {
+  profile?: string
+  region?: string
+  serviceHint?: ServiceId | ''
+  logGroupName?: string
+  limit?: number
+}
+
+export type CloudWatchSavedQuery = {
+  id: string
+  name: string
+  description: string
+  queryString: string
+  logGroupNames: string[]
+  profile: string
+  region: string
+  serviceHint: ServiceId | ''
+  createdAt: string
+  updatedAt: string
+  lastRunAt: string
+}
+
+export type CloudWatchSavedQueryInput = Omit<CloudWatchSavedQuery, 'id' | 'createdAt' | 'updatedAt' | 'lastRunAt'> & {
+  id?: string
+}
+
+export type CloudWatchQueryHistoryStatus = 'success' | 'failed'
+
+export type CloudWatchQueryHistoryEntry = {
+  id: string
+  queryString: string
+  logGroupNames: string[]
+  profile: string
+  region: string
+  serviceHint: ServiceId | ''
+  savedQueryId: string
+  status: CloudWatchQueryHistoryStatus
+  durationMs: number
+  resultSummary: string
+  executedAt: string
+}
+
+export type CloudWatchQueryHistoryInput = Omit<CloudWatchQueryHistoryEntry, 'id' | 'executedAt'>
+
+export type CloudWatchQueryExecutionInput = {
+  queryString: string
+  logGroupNames: string[]
+  startTimeMs: number
+  endTimeMs: number
+  limit?: number
+}
+
+export type CloudWatchQueryExecutionRow = Record<string, string>
+
+export type CloudWatchQueryExecutionStatistics = {
+  recordsMatched: number
+  recordsScanned: number
+  bytesScanned: number
+}
+
+export type CloudWatchQueryExecutionResult = {
+  queryId: string
+  status: string
+  queryString: string
+  logGroupNames: string[]
+  fields: string[]
+  rows: CloudWatchQueryExecutionRow[]
+  statistics: CloudWatchQueryExecutionStatistics
+  limit: number
+  startedAt: string
+  completedAt: string
+}
+
+export type DbConnectionEngine =
+  | 'postgres'
+  | 'mysql'
+  | 'mariadb'
+  | 'sqlserver'
+  | 'oracle'
+  | 'aurora-postgresql'
+  | 'aurora-mysql'
+  | 'unknown'
+
+export type DbConnectionResourceKind =
+  | 'rds-instance'
+  | 'rds-cluster'
+  | 'aurora-cluster'
+  | 'manual'
+
+export type DbConnectionCredentialSourceKind = 'local-vault' | 'aws-secrets-manager' | 'manual'
+
+export type DbVaultCredentialSummary = {
+  name: string
+  engine: DbConnectionEngine
+  usernameHint: string
+  notes: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type DbVaultCredentialInput = {
+  name: string
+  engine: DbConnectionEngine
+  usernameHint: string
+  password: string
+  notes: string
+}
+
+export type DbConnectionPresetFilter = {
+  profile?: string
+  region?: string
+  resourceId?: string
+  engine?: DbConnectionEngine
+}
+
+export type DbConnectionPreset = {
+  id: string
+  name: string
+  profile: string
+  region: string
+  resourceKind: DbConnectionResourceKind
+  resourceId: string
+  engine: DbConnectionEngine
+  host: string
+  port: number
+  databaseName: string
+  username: string
+  credentialSourceKind: DbConnectionCredentialSourceKind
+  credentialSourceRef: string
+  notes: string
+  createdAt: string
+  updatedAt: string
+  lastUsedAt: string
+}
+
+export type DbConnectionPresetInput = Omit<DbConnectionPreset, 'id' | 'createdAt' | 'updatedAt' | 'lastUsedAt'> & {
+  id?: string
+}
+
+export type DbConnectionResolveInput = {
+  presetId?: string
+  resourceKind: DbConnectionResourceKind
+  resourceId: string
+  resourceLabel: string
+  engine: DbConnectionEngine
+  host: string
+  port: number
+  databaseName: string
+  username: string
+  credentialSourceKind: DbConnectionCredentialSourceKind
+  credentialSourceRef: string
+  manualPassword: string
+}
+
+export type DbConnectionHelperSnippet = {
+  id: 'terminal-command' | 'cli-command' | 'masked-uri' | 'connection-uri'
+  label: string
+  value: string
+  sensitive: boolean
+}
+
+export type DbConnectionResolutionResult = {
+  presetId: string
+  displayName: string
+  resourceKind: DbConnectionResourceKind
+  resourceId: string
+  engine: DbConnectionEngine
+  host: string
+  port: number
+  databaseName: string
+  username: string
+  password: string
+  credentialSourceKind: DbConnectionCredentialSourceKind
+  credentialSourceRef: string
+  sourceSummary: string
+  warnings: string[]
+  snippets: DbConnectionHelperSnippet[]
+  terminalCommand: string
+  cliCommand: string
+  maskedConnectionUri: string
+  connectionUri: string
+  resolvedAt: string
+}
+
+export type AwsCapabilitySubject =
+  | ServiceId
+  | 'billing'
+  | 'organizations'
+  | 'route53-domains'
+  | 'local-zones'
+
+export type AwsCapabilityAvailability = 'supported' | 'limited' | 'unsupported'
+
+export type AwsCapabilityHintSeverity = 'info' | 'warning' | 'error'
+
+export type AwsCapabilityHint = {
+  id: string
+  subject: AwsCapabilitySubject
+  region: string
+  availability: AwsCapabilityAvailability
+  severity: AwsCapabilityHintSeverity
+  title: string
+  summary: string
+  recommendedAction: string
+}
+
+export type AwsCapabilitySnapshot = {
+  region: string
+  generatedAt: string
+  hints: AwsCapabilityHint[]
+}
+
 export type ServiceMaturity = 'production-ready' | 'beta' | 'experimental'
 
 export type ServiceDescriptor = {
@@ -1004,7 +1256,14 @@ export type NavigationFocus =
   | { service: 'ecs'; clusterArn: string; serviceName: string }
   | { service: 'eks'; clusterName: string }
   | { service: 'ec2'; instanceId?: string; volumeId?: string; tab?: 'instances' | 'volumes' | 'snapshots' }
-  | { service: 'cloudwatch'; ec2InstanceId: string }
+  | {
+      service: 'cloudwatch'
+      ec2InstanceId?: string
+      logGroupNames?: string[]
+      queryString?: string
+      sourceLabel?: string
+      serviceHint?: ServiceId | ''
+    }
   | { service: 'vpc'; vpcId: string }
   | { service: 'security-groups'; securityGroupId: string }
   | { service: 'waf'; webAclName: string }
@@ -1230,6 +1489,14 @@ export type Route53HostedZoneSummary = {
   comment: string
 }
 
+export type Route53HostedZoneCreateInput = {
+  domainName: string
+  comment: string
+  privateZone: boolean
+  vpcId: string
+  vpcRegion: string
+}
+
 export type Route53RecordSummary = {
   name: string
   type: string
@@ -1330,6 +1597,37 @@ export type CostBreakdown = {
   entries: CostBreakdownEntry[]
   total: number
   period: string
+}
+
+export type BillingLinkedAccountSummary = {
+  accountId: string
+  amount: number
+  sharePercent: number
+}
+
+export type BillingOwnershipValueSummary = {
+  value: string
+  amount: number
+  sharePercent: number
+}
+
+export type BillingTagOwnershipHint = {
+  key: GovernanceTagKey
+  coveragePercent: number
+  taggedAmount: number
+  untaggedAmount: number
+  topValues: BillingOwnershipValueSummary[]
+}
+
+export type OverviewAccountContext = {
+  caller: CallerIdentity
+  billingHomeRegion: string
+  payerVisibility: 'payer-or-management' | 'member-or-standalone' | 'unavailable'
+  linkedAccounts: BillingLinkedAccountSummary[]
+  ownershipHints: BillingTagOwnershipHint[]
+  capabilitySnapshot: AwsCapabilitySnapshot
+  notes: string[]
+  generatedAt: string
 }
 
 export type ServiceRelationship = {
@@ -1743,6 +2041,9 @@ export type RdsInstanceDetail = {
   caCertificateIdentifier: string
   masterUsername: string
   databaseName: string
+  managesMasterUserPassword: boolean
+  masterUserSecretArn: string
+  masterUserSecretKmsKeyId: string
   subnetGroup: string
   parameterGroups: string[]
   vpcSecurityGroupIds: string[]
@@ -1758,6 +2059,9 @@ export type RdsClusterDetail = {
   backupRetentionPeriod: number
   preferredBackupWindow: string
   preferredMaintenanceWindow: string
+  managesMasterUserPassword: boolean
+  masterUserSecretArn: string
+  masterUserSecretKmsKeyId: string
   parameterGroups: string[]
   subnetGroup: string
   vpcSecurityGroupIds: string[]

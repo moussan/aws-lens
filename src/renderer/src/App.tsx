@@ -9,6 +9,7 @@ import type {
   EnvironmentHealthReport,
   EnterpriseAccessMode,
   EnterpriseAuditEvent,
+  GovernanceTagDefaults,
   NavigationFocus,
   ServiceDescriptor,
   ServiceId,
@@ -29,6 +30,7 @@ import {
   getAppSettings,
   getEnvironmentHealth,
   getEnterpriseSettings,
+  getGovernanceTagDefaults,
   getTerraformCliInfo,
   invalidateAllPageCaches,
   invalidatePageCache,
@@ -40,6 +42,7 @@ import {
   setTerraformCliKind,
   setEnterpriseAccessMode,
   updateAppSettings,
+  updateGovernanceTagDefaults,
   useAwsActivity,
   useEnterpriseSettings,
   type CacheTag
@@ -439,6 +442,7 @@ export function App() {
   const [settingsMessage, setSettingsMessage] = useState('')
   const [environmentHealth, setEnvironmentHealth] = useState<EnvironmentHealthReport | null>(null)
   const [environmentBusy, setEnvironmentBusy] = useState(false)
+  const [governanceDefaults, setGovernanceDefaults] = useState<GovernanceTagDefaults | null>(null)
   const [toolchainInfo, setToolchainInfo] = useState<TerraformCliInfo | null>(null)
   const [toolchainBusy, setToolchainBusy] = useState(false)
   const [securitySummary, setSecuritySummary] = useState<AppSecuritySummary | null>(null)
@@ -484,6 +488,14 @@ export function App() {
         // Ignore settings hydration failures until the settings surface is opened.
       })
       .finally(() => setSettingsHydrated(true))
+  }, [])
+
+  useEffect(() => {
+    void getGovernanceTagDefaults()
+      .then(setGovernanceDefaults)
+      .catch(() => {
+        // Ignore governance defaults hydration failures until the settings surface is opened.
+      })
   }, [])
 
   const showInitialLoadingScreen = !servicesHydrated || !settingsHydrated
@@ -1188,6 +1200,17 @@ export function App() {
     }
   }
 
+  async function handleUpdateGovernanceDefaults(update: GovernanceTagDefaults): Promise<void> {
+    setSettingsMessage('')
+    try {
+      const nextDefaults = await updateGovernanceTagDefaults(update)
+      setGovernanceDefaults(nextDefaults)
+      setSettingsMessage('Governance tag defaults saved.')
+    } catch (err) {
+      setSettingsMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function handleDownloadUpdate(): Promise<void> {
     setSettingsMessage('')
     try {
@@ -1592,12 +1615,14 @@ export function App() {
           releaseStateTone={releaseStateTone}
           environmentHealth={environmentHealth}
           environmentBusy={environmentBusy}
+          governanceDefaults={governanceDefaults}
           toolchainBusy={toolchainBusy}
           enterpriseBusy={enterpriseBusy}
           settingsMessage={settingsMessage}
           onUpdateGeneralSettings={(update) => void handleUpdateGeneralSettings(update)}
           onUpdateTerminalSettings={(update) => void handleUpdateTerminalSettings(update)}
           onUpdateRefreshSettings={(update) => void handleUpdateRefreshSettings(update)}
+          onUpdateGovernanceDefaults={(update) => void handleUpdateGovernanceDefaults(update)}
           onUpdateToolchainSettings={(update) => void handleUpdateToolchainSettings(update)}
           onUpdatePreferences={(update) => void handleUpdatePreferences(update)}
           onAccessModeChange={(mode) => void handleAccessModeChange(mode)}
@@ -1714,10 +1739,10 @@ export function App() {
     if (targetScreen === 'cloudformation' && targetService?.id === 'cloudformation') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudFormationConsole connection={connection} refreshNonce={pageRefreshNonceByScreen['cloudformation'] ?? 0} />}</ConnectedServiceScreen>
     if (targetScreen === 'route53' && targetService?.id === 'route53') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <Route53Console connection={connection} focusRecord={getFocus('route53')} />}</ConnectedServiceScreen>
     if (targetScreen === 's3' && targetService?.id === 's3') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <S3Console connection={connection} />}</ConnectedServiceScreen>
-    if (targetScreen === 'rds' && targetService?.id === 'rds') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <RdsConsole connection={connection} />}</ConnectedServiceScreen>
-    if (targetScreen === 'lambda' && targetService?.id === 'lambda') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <LambdaConsole connection={connection} focusFunctionName={getFocus('lambda')} />}</ConnectedServiceScreen>
+    if (targetScreen === 'rds' && targetService?.id === 'rds') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <RdsConsole connection={connection} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} onRunTerminalCommand={handleOpenTerminalCommand} />}</ConnectedServiceScreen>
+    if (targetScreen === 'lambda' && targetService?.id === 'lambda') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <LambdaConsole connection={connection} focusFunctionName={getFocus('lambda')} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} />}</ConnectedServiceScreen>
     if (targetScreen === 'auto-scaling' && targetService?.id === 'auto-scaling') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <AutoScalingConsole connection={connection} />}</ConnectedServiceScreen>
-    if (targetScreen === 'ecs' && targetService?.id === 'ecs') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcsConsole connection={connection} refreshNonce={pageRefreshNonceByScreen['ecs'] ?? 0} focusService={getFocus('ecs')} onRunTerminalCommand={handleOpenTerminalCommand} />}</ConnectedServiceScreen>
+    if (targetScreen === 'ecs' && targetService?.id === 'ecs') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcsConsole connection={connection} refreshNonce={pageRefreshNonceByScreen['ecs'] ?? 0} focusService={getFocus('ecs')} onRunTerminalCommand={handleOpenTerminalCommand} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} />}</ConnectedServiceScreen>
     if (targetScreen === 'acm' && targetService?.id === 'acm') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <AcmConsole connection={connection} onOpenRoute53={(record) => navigateWithFocus({ service: 'route53', record })} onOpenLoadBalancer={(loadBalancerArn) => navigateWithFocus({ service: 'load-balancers', loadBalancerArn })} onOpenWaf={(webAclName) => navigateWithFocus({ service: 'waf', webAclName })} />}</ConnectedServiceScreen>
     if (targetScreen === 'ecr' && targetService?.id === 'ecr') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcrConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'eks' && targetService?.id === 'eks') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EksConsole connection={connection} focusClusterName={getFocus('eks')} onRunTerminalCommand={handleOpenTerminalCommand} />}</ConnectedServiceScreen>
@@ -2099,7 +2124,7 @@ export function App() {
 
         {screen === 'route53' && selectedService?.id === 'route53' && (
           <ConnectedServiceScreen service={selectedService!} state={connectionState}>
-            {(connection) => <Route53Console connection={connection} />}
+            {(connection) => <Route53Console connection={connection} focusRecord={getFocus('route53')} />}
           </ConnectedServiceScreen>
         )}
 
@@ -2111,13 +2136,13 @@ export function App() {
 
         {screen === 'rds' && selectedService?.id === 'rds' && (
           <ConnectedServiceScreen service={selectedService!} state={connectionState}>
-            {(connection) => <RdsConsole connection={connection} />}
+            {(connection) => <RdsConsole connection={connection} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} onRunTerminalCommand={handleOpenTerminalCommand} />}
           </ConnectedServiceScreen>
         )}
 
         {screen === 'lambda' && selectedService?.id === 'lambda' && (
           <ConnectedServiceScreen service={selectedService!} state={connectionState}>
-            {(connection) => <LambdaConsole connection={connection} />}
+            {(connection) => <LambdaConsole connection={connection} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} />}
           </ConnectedServiceScreen>
         )}
 
@@ -2129,7 +2154,7 @@ export function App() {
 
         {screen === 'ecs' && selectedService?.id === 'ecs' && (
           <ConnectedServiceScreen service={selectedService!} state={connectionState}>
-                {(connection) => <EcsConsole connection={connection} onRunTerminalCommand={handleOpenTerminalCommand} />}
+                {(connection) => <EcsConsole connection={connection} onRunTerminalCommand={handleOpenTerminalCommand} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} />}
           </ConnectedServiceScreen>
         )}
 

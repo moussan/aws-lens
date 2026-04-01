@@ -1,8 +1,25 @@
 import { ipcMain } from 'electron'
 
-import type { AwsConnection, CloudWatchMetricSummary, EcsFargateServiceConfig, LambdaCreateConfig, Route53RecordChange } from '@shared/types'
+import type {
+  AwsConnection,
+  CloudWatchMetricSummary,
+  CloudWatchQueryExecutionInput,
+  EcsFargateServiceConfig,
+  LambdaCreateConfig,
+  Route53HostedZoneCreateInput,
+  Route53RecordChange
+} from '@shared/types'
 import { listAutoScalingGroupInstances, listAutoScalingGroups, deleteAutoScalingGroup, startAutoScalingInstanceRefresh, updateAutoScalingGroupCapacity } from './aws/autoScaling'
-import { listCloudWatchLogGroups, listCloudWatchMetrics, listRecentLogEvents, getEc2MetricSeries, listEc2InstanceMetrics, getMetricStatistics, getEc2AllMetricSeries } from './aws/cloudwatch'
+import {
+  executeCloudWatchQuery,
+  listCloudWatchLogGroups,
+  listCloudWatchMetrics,
+  listRecentLogEvents,
+  getEc2MetricSeries,
+  listEc2InstanceMetrics,
+  getMetricStatistics,
+  getEc2AllMetricSeries
+} from './aws/cloudwatch'
 import { lookupEvents, lookupEventsByResource, listTrails } from './aws/cloudtrail'
 import {
   createChangeSet,
@@ -34,7 +51,7 @@ import {
   stopDbCluster,
   stopDbInstance
 } from './aws/rds'
-import { deleteRoute53Record, listRoute53HostedZones, listRoute53Records, upsertRoute53Record } from './aws/route53'
+import { createRoute53HostedZone, deleteRoute53Record, listRoute53HostedZones, listRoute53Records, upsertRoute53Record } from './aws/route53'
 import {
   createBucket,
   createFolder,
@@ -74,8 +91,8 @@ export function registerServiceIpcHandlers(): void {
   ipcMain.handle('cloudwatch:log-groups', async (_event, connection: AwsConnection) =>
     wrap(() => listCloudWatchLogGroups(connection))
   )
-  ipcMain.handle('cloudwatch:recent-events', async (_event, connection: AwsConnection, logGroupName: string) =>
-    wrap(() => listRecentLogEvents(connection, logGroupName))
+  ipcMain.handle('cloudwatch:recent-events', async (_event, connection: AwsConnection, logGroupName: string, periodHours?: number) =>
+    wrap(() => listRecentLogEvents(connection, logGroupName, periodHours))
   )
   ipcMain.handle('cloudwatch:ec2-instance-metrics', async (_event, connection: AwsConnection, instanceId: string) =>
     wrap(() => listEc2InstanceMetrics(connection, instanceId))
@@ -85,6 +102,9 @@ export function registerServiceIpcHandlers(): void {
   )
   ipcMain.handle('cloudwatch:ec2-all-series', async (_event, connection: AwsConnection, instanceId: string, periodHours: number) =>
     wrap(() => getEc2AllMetricSeries(connection, instanceId, periodHours))
+  )
+  ipcMain.handle('cloudwatch:run-query', async (_event, connection: AwsConnection, input: CloudWatchQueryExecutionInput) =>
+    wrap(() => executeCloudWatchQuery(connection, input))
   )
 
   ipcMain.handle('cloudtrail:list-trails', async (_event, connection: AwsConnection) =>
@@ -99,6 +119,9 @@ export function registerServiceIpcHandlers(): void {
 
   ipcMain.handle('route53:hosted-zones', async (_event, connection: AwsConnection) =>
     wrap(() => listRoute53HostedZones(connection))
+  )
+  ipcMain.handle('route53:create-hosted-zone', async (_event, connection: AwsConnection, input: Route53HostedZoneCreateInput) =>
+    wrap(() => createRoute53HostedZone(connection, input))
   )
   ipcMain.handle('route53:records', async (_event, connection: AwsConnection, hostedZoneId: string) =>
     wrap(() => listRoute53Records(connection, hostedZoneId))

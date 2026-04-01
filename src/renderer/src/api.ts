@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 
 import type {
+  AwsCapabilitySnapshot,
+  AwsCapabilitySubject,
   AppSettings,
   ComparisonRequest,
   ComparisonResult,
@@ -12,6 +14,22 @@ import type {
   EnvironmentHealthReport,
   AppReleaseInfo,
   AppSecuritySummary,
+  CloudWatchQueryFilter,
+  CloudWatchQueryExecutionInput,
+  CloudWatchQueryExecutionResult,
+  CloudWatchQueryHistoryEntry,
+  CloudWatchQueryHistoryInput,
+  CloudWatchSavedQuery,
+  CloudWatchSavedQueryInput,
+  DbConnectionResolveInput,
+  DbConnectionResolutionResult,
+  DbConnectionPreset,
+  DbConnectionPresetFilter,
+  DbConnectionPresetInput,
+  DbVaultCredentialInput,
+  DbVaultCredentialSummary,
+  GovernanceTagDefaults,
+  GovernanceTagDefaultsUpdate,
   AssumeRoleResult,
   AssumeRoleRequest,
   AwsAssumeRoleTarget,
@@ -85,6 +103,7 @@ import type {
   RdsClusterSummary,
   RdsInstanceDetail,
   RdsInstanceSummary,
+  Route53HostedZoneCreateInput,
   Route53HostedZoneSummary,
   Route53RecordChange,
   Route53RecordSummary,
@@ -124,6 +143,7 @@ import type {
   NatGatewaySummary,
   NetworkInterfaceSummary,
   CostBreakdown,
+  OverviewAccountContext,
   OverviewMetrics,
   OverviewStatistics,
   ObservabilityPostureReport,
@@ -179,6 +199,7 @@ export type AwsActivityState = {
 
 type AwsLensBridge = Window['awsLens']
 export type CacheTag =
+  | 'phase1-foundations'
   | 'shell'
   | 'compare'
   | 'overview'
@@ -229,6 +250,22 @@ let enterpriseSettingsState: EnterpriseSettings = {
 }
 
 const CACHE_TAG_BY_METHOD: Partial<Record<keyof AwsLensBridge, CacheTag>> = {
+  getGovernanceTagDefaults: 'phase1-foundations',
+  updateGovernanceTagDefaults: 'phase1-foundations',
+  listCloudWatchSavedQueries: 'phase1-foundations',
+  saveCloudWatchSavedQuery: 'phase1-foundations',
+  deleteCloudWatchSavedQuery: 'phase1-foundations',
+  listCloudWatchQueryHistory: 'phase1-foundations',
+  recordCloudWatchQueryHistory: 'phase1-foundations',
+  clearCloudWatchQueryHistory: 'phase1-foundations',
+  listDbConnectionPresets: 'phase1-foundations',
+  saveDbConnectionPreset: 'phase1-foundations',
+  deleteDbConnectionPreset: 'phase1-foundations',
+  markDbConnectionPresetUsed: 'phase1-foundations',
+  listDbVaultCredentials: 'phase1-foundations',
+  saveDbVaultCredential: 'phase1-foundations',
+  deleteDbVaultCredential: 'phase1-foundations',
+  getAwsCapabilitySnapshot: 'phase1-foundations',
   listProfiles: 'shell',
   deleteProfile: 'shell',
   chooseAndImportConfig: 'shell',
@@ -239,11 +276,15 @@ const CACHE_TAG_BY_METHOD: Partial<Record<keyof AwsLensBridge, CacheTag>> = {
   runComparison: 'compare',
   getOverviewMetrics: 'overview',
   getOverviewStatistics: 'overview',
+  getOverviewAccountContext: 'overview',
   getComplianceReport: 'compliance-center',
   getRelationshipMap: 'overview',
   getCostBreakdown: 'overview',
   searchByTag: 'overview',
   listEc2Instances: 'ec2',
+  runEc2BulkInstanceAction: 'ec2',
+  terminateEc2Instances: 'ec2',
+  listEc2SshKeySuggestions: 'ec2',
   listSsmManagedInstances: 'ec2',
   getSsmConnectionTarget: 'ec2',
   listSsmSessions: 'ec2',
@@ -304,6 +345,7 @@ const CACHE_TAG_BY_METHOD: Partial<Record<keyof AwsLensBridge, CacheTag>> = {
   getReachabilityAnalysis: 'vpc',
   listLoadBalancerWorkspaces: 'load-balancers',
   listRoute53HostedZones: 'route53',
+  createRoute53HostedZone: 'route53',
   listRoute53Records: 'route53',
   listSecrets: 'secrets-manager',
   describeSecret: 'secrets-manager',
@@ -351,6 +393,16 @@ const CACHE_TAG_BY_METHOD: Partial<Record<keyof AwsLensBridge, CacheTag>> = {
 }
 
 const MUTATING_METHODS = new Set<keyof AwsLensBridge>([
+  'updateGovernanceTagDefaults',
+  'saveCloudWatchSavedQuery',
+  'deleteCloudWatchSavedQuery',
+  'recordCloudWatchQueryHistory',
+  'clearCloudWatchQueryHistory',
+  'saveDbConnectionPreset',
+  'deleteDbConnectionPreset',
+  'markDbConnectionPresetUsed',
+  'saveDbVaultCredential',
+  'deleteDbVaultCredential',
   'deleteProfile',
   'chooseAndImportConfig',
   'saveCredentials',
@@ -371,6 +423,7 @@ const MUTATING_METHODS = new Set<keyof AwsLensBridge>([
   'stopEcsTask',
   'updateSubnetPublicIp',
   'createReachabilityPath',
+  'createRoute53HostedZone',
   'upsertRoute53Record',
   'deleteRoute53Record',
   'invokeLambdaFunction',
@@ -475,6 +528,8 @@ const MUTATING_METHODS = new Set<keyof AwsLensBridge>([
   'createIamPolicy',
   'deleteIamPolicy',
   'generateIamCredentialReport',
+  'runEc2BulkInstanceAction',
+  'terminateEc2Instances',
   'startSsmSession',
   'sendSsmCommand'
 ])
@@ -827,6 +882,77 @@ export async function listServices(): Promise<ServiceDescriptor[]> {
   return unwrap((await awsBridge().listServices()) as Wrapped<ServiceDescriptor[]>)
 }
 
+export async function getGovernanceTagDefaults(): Promise<GovernanceTagDefaults> {
+  return unwrap((await awsBridge().getGovernanceTagDefaults()) as Wrapped<GovernanceTagDefaults>)
+}
+
+export async function updateGovernanceTagDefaults(update: GovernanceTagDefaultsUpdate): Promise<GovernanceTagDefaults> {
+  return unwrap((await awsBridge().updateGovernanceTagDefaults(update)) as Wrapped<GovernanceTagDefaults>)
+}
+
+export async function listCloudWatchSavedQueries(filter?: CloudWatchQueryFilter): Promise<CloudWatchSavedQuery[]> {
+  return unwrap((await awsBridge().listCloudWatchSavedQueries(filter)) as Wrapped<CloudWatchSavedQuery[]>)
+}
+
+export async function saveCloudWatchSavedQuery(input: CloudWatchSavedQueryInput): Promise<CloudWatchSavedQuery> {
+  return unwrap((await awsBridge().saveCloudWatchSavedQuery(input)) as Wrapped<CloudWatchSavedQuery>)
+}
+
+export async function deleteCloudWatchSavedQuery(id: string): Promise<void> {
+  return unwrap((await awsBridge().deleteCloudWatchSavedQuery(id)) as Wrapped<void>)
+}
+
+export async function listCloudWatchQueryHistory(filter?: CloudWatchQueryFilter): Promise<CloudWatchQueryHistoryEntry[]> {
+  return unwrap((await awsBridge().listCloudWatchQueryHistory(filter)) as Wrapped<CloudWatchQueryHistoryEntry[]>)
+}
+
+export async function recordCloudWatchQueryHistory(input: CloudWatchQueryHistoryInput): Promise<CloudWatchQueryHistoryEntry> {
+  return unwrap((await awsBridge().recordCloudWatchQueryHistory(input)) as Wrapped<CloudWatchQueryHistoryEntry>)
+}
+
+export async function clearCloudWatchQueryHistory(filter?: CloudWatchQueryFilter): Promise<number> {
+  return unwrap((await awsBridge().clearCloudWatchQueryHistory(filter)) as Wrapped<number>)
+}
+
+export async function listDbConnectionPresets(filter?: DbConnectionPresetFilter): Promise<DbConnectionPreset[]> {
+  return unwrap((await awsBridge().listDbConnectionPresets(filter)) as Wrapped<DbConnectionPreset[]>)
+}
+
+export async function saveDbConnectionPreset(input: DbConnectionPresetInput): Promise<DbConnectionPreset> {
+  return unwrap((await awsBridge().saveDbConnectionPreset(input)) as Wrapped<DbConnectionPreset>)
+}
+
+export async function deleteDbConnectionPreset(id: string): Promise<void> {
+  return unwrap((await awsBridge().deleteDbConnectionPreset(id)) as Wrapped<void>)
+}
+
+export async function markDbConnectionPresetUsed(id: string): Promise<DbConnectionPreset> {
+  return unwrap((await awsBridge().markDbConnectionPresetUsed(id)) as Wrapped<DbConnectionPreset>)
+}
+
+export async function listDbVaultCredentials(): Promise<DbVaultCredentialSummary[]> {
+  return unwrap((await awsBridge().listDbVaultCredentials()) as Wrapped<DbVaultCredentialSummary[]>)
+}
+
+export async function saveDbVaultCredential(input: DbVaultCredentialInput): Promise<DbVaultCredentialSummary> {
+  return unwrap((await awsBridge().saveDbVaultCredential(input)) as Wrapped<DbVaultCredentialSummary>)
+}
+
+export async function deleteDbVaultCredential(name: string): Promise<void> {
+  return unwrap((await awsBridge().deleteDbVaultCredential(name)) as Wrapped<void>)
+}
+
+export async function resolveDbConnectionMaterial(
+  connection: AwsConnection,
+  input: DbConnectionResolveInput
+): Promise<DbConnectionResolutionResult> {
+  return unwrap((await rawAwsBridge().resolveDbConnectionMaterial(connection, input)) as Wrapped<DbConnectionResolutionResult>)
+}
+
+export async function getAwsCapabilitySnapshot(region: string, subjects?: AwsCapabilitySubject[]): Promise<AwsCapabilitySnapshot> {
+  return unwrap((await awsBridge().getAwsCapabilitySnapshot(region, subjects)) as Wrapped<AwsCapabilitySnapshot>)
+}
+
 export function subscribeToEnterpriseSettings(listener: (settings: EnterpriseSettings) => void): () => void {
   enterpriseListeners.add(listener)
   listener(getEnterpriseSettingsState())
@@ -1156,8 +1282,8 @@ export async function listCloudWatchLogGroups(connection: AwsConnection): Promis
   return unwrap((await awsBridge().listCloudWatchLogGroups(connection)) as Wrapped<CloudWatchLogGroupSummary[]>)
 }
 
-export async function listCloudWatchRecentEvents(connection: AwsConnection, logGroupName: string): Promise<CloudWatchLogEventSummary[]> {
-  return unwrap((await awsBridge().listCloudWatchRecentEvents(connection, logGroupName)) as Wrapped<CloudWatchLogEventSummary[]>)
+export async function listCloudWatchRecentEvents(connection: AwsConnection, logGroupName: string, periodHours?: number): Promise<CloudWatchLogEventSummary[]> {
+  return unwrap((await awsBridge().listCloudWatchRecentEvents(connection, logGroupName, periodHours)) as Wrapped<CloudWatchLogEventSummary[]>)
 }
 
 export async function listEc2InstanceMetrics(connection: AwsConnection, instanceId: string): Promise<CloudWatchMetricSummary[]> {
@@ -1172,8 +1298,16 @@ export async function getEc2AllMetricSeries(connection: AwsConnection, instanceI
   return unwrap((await awsBridge().getEc2AllMetricSeries(connection, instanceId, periodHours)) as Wrapped<CloudWatchMetricSeries[]>)
 }
 
+export async function runCloudWatchQuery(connection: AwsConnection, input: CloudWatchQueryExecutionInput): Promise<CloudWatchQueryExecutionResult> {
+  return unwrap((await awsBridge().runCloudWatchQuery(connection, input)) as Wrapped<CloudWatchQueryExecutionResult>)
+}
+
 export async function listRoute53HostedZones(connection: AwsConnection): Promise<Route53HostedZoneSummary[]> {
   return unwrap((await awsBridge().listRoute53HostedZones(connection)) as Wrapped<Route53HostedZoneSummary[]>)
+}
+
+export async function createRoute53HostedZone(connection: AwsConnection, input: Route53HostedZoneCreateInput): Promise<Route53HostedZoneSummary> {
+  return unwrap((await awsBridge().createRoute53HostedZone(connection, input)) as Wrapped<Route53HostedZoneSummary>)
 }
 
 export async function listRoute53Records(connection: AwsConnection, hostedZoneId: string): Promise<Route53RecordSummary[]> {
@@ -1443,6 +1577,10 @@ export async function getOverviewMetrics(connection: AwsConnection, regions: str
 
 export async function getCostBreakdown(connection: AwsConnection): Promise<CostBreakdown> {
   return unwrap((await awsBridge().getCostBreakdown(connection)) as Wrapped<CostBreakdown>)
+}
+
+export async function getOverviewAccountContext(connection: AwsConnection): Promise<OverviewAccountContext> {
+  return unwrap((await awsBridge().getOverviewAccountContext(connection)) as Wrapped<OverviewAccountContext>)
 }
 
 export async function getOverviewStatistics(connection: AwsConnection): Promise<OverviewStatistics> {

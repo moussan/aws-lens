@@ -1,12 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 import type {
+  AwsCapabilitySubject,
   AppSettings,
   ComparisonRequest,
   AssumeRoleRequest,
   AwsAssumeRoleTarget,
+  CloudWatchQueryFilter,
+  CloudWatchQueryExecutionInput,
+  CloudWatchQueryHistoryInput,
+  CloudWatchSavedQueryInput,
   AwsConnection,
   BastionLaunchConfig,
+  DbConnectionResolveInput,
+  DbConnectionPresetFilter,
+  DbConnectionPresetInput,
+  DbVaultCredentialInput,
+  Ec2BulkInstanceAction,
   Ec2InstanceAction,
   EbsVolumeAttachRequest,
   EbsVolumeDetachRequest,
@@ -14,6 +24,7 @@ import type {
   EbsTempInspectionProgress,
   EcsFargateServiceConfig,
   LambdaCreateConfig,
+  Route53HostedZoneCreateInput,
   SsmSendCommandRequest,
   SsmStartSessionRequest,
   SnapshotLaunchConfig,
@@ -44,6 +55,24 @@ const awsLensApi = {
   assumeRoleSession: (request: AssumeRoleRequest) => ipcRenderer.invoke('session-hub:assume', request),
   assumeSavedRoleTarget: (targetId: string) => ipcRenderer.invoke('session-hub:assume-target', targetId),
   listServices: () => ipcRenderer.invoke('services:list'),
+  getGovernanceTagDefaults: () => ipcRenderer.invoke('phase1:get-governance-tag-defaults'),
+  updateGovernanceTagDefaults: (update: unknown) => ipcRenderer.invoke('phase1:update-governance-tag-defaults', update),
+  listCloudWatchSavedQueries: (filter?: CloudWatchQueryFilter) => ipcRenderer.invoke('phase1:list-cloudwatch-saved-queries', filter),
+  saveCloudWatchSavedQuery: (input: CloudWatchSavedQueryInput) => ipcRenderer.invoke('phase1:save-cloudwatch-saved-query', input),
+  deleteCloudWatchSavedQuery: (id: string) => ipcRenderer.invoke('phase1:delete-cloudwatch-saved-query', id),
+  listCloudWatchQueryHistory: (filter?: CloudWatchQueryFilter) => ipcRenderer.invoke('phase1:list-cloudwatch-query-history', filter),
+  recordCloudWatchQueryHistory: (input: CloudWatchQueryHistoryInput) => ipcRenderer.invoke('phase1:record-cloudwatch-query-history', input),
+  clearCloudWatchQueryHistory: (filter?: CloudWatchQueryFilter) => ipcRenderer.invoke('phase1:clear-cloudwatch-query-history', filter),
+  listDbConnectionPresets: (filter?: DbConnectionPresetFilter) => ipcRenderer.invoke('phase1:list-db-connection-presets', filter),
+  saveDbConnectionPreset: (input: DbConnectionPresetInput) => ipcRenderer.invoke('phase1:save-db-connection-preset', input),
+  deleteDbConnectionPreset: (id: string) => ipcRenderer.invoke('phase1:delete-db-connection-preset', id),
+  markDbConnectionPresetUsed: (id: string) => ipcRenderer.invoke('phase1:mark-db-connection-preset-used', id),
+  listDbVaultCredentials: () => ipcRenderer.invoke('phase1:list-db-vault-credentials'),
+  saveDbVaultCredential: (input: DbVaultCredentialInput) => ipcRenderer.invoke('phase1:save-db-vault-credential', input),
+  deleteDbVaultCredential: (name: string) => ipcRenderer.invoke('phase1:delete-db-vault-credential', name),
+  resolveDbConnectionMaterial: (connection: AwsConnection, input: DbConnectionResolveInput) =>
+    ipcRenderer.invoke('phase1:resolve-db-connection-material', connection, input),
+  getAwsCapabilitySnapshot: (region: string, subjects?: AwsCapabilitySubject[]) => ipcRenderer.invoke('phase1:get-aws-capability-snapshot', region, subjects),
   getReleaseInfo: () => ipcRenderer.invoke('app:release-info'),
   getAppSettings: () => ipcRenderer.invoke('app:settings:get'),
   updateAppSettings: (update: Partial<AppSettings>) => ipcRenderer.invoke('app:settings:update', update),
@@ -75,8 +104,12 @@ const awsLensApi = {
     ipcRenderer.invoke('ec2:modify-volume', connection, volumeId, request),
   runEc2InstanceAction: (connection: AwsConnection, instanceId: string, action: Ec2InstanceAction) =>
     ipcRenderer.invoke('ec2:action', connection, instanceId, action),
+  runEc2BulkInstanceAction: (connection: AwsConnection, instanceIds: string[], action: Ec2BulkInstanceAction) =>
+    ipcRenderer.invoke('ec2:action-bulk', connection, instanceIds, action),
   terminateEc2Instance: (connection: AwsConnection, instanceId: string) =>
     ipcRenderer.invoke('ec2:terminate', connection, instanceId),
+  terminateEc2Instances: (connection: AwsConnection, instanceIds: string[]) =>
+    ipcRenderer.invoke('ec2:terminate-bulk', connection, instanceIds),
   resizeEc2Instance: (connection: AwsConnection, instanceId: string, instanceType: string) =>
     ipcRenderer.invoke('ec2:resize', connection, instanceId, instanceType),
   listInstanceTypes: (connection: AwsConnection, architecture?: string, currentGenerationOnly?: boolean) =>
@@ -134,15 +167,19 @@ const awsLensApi = {
   getEc2MetricSeries: (connection: AwsConnection, instanceId: string) =>
     ipcRenderer.invoke('cloudwatch:ec2-series', connection, instanceId),
   listCloudWatchLogGroups: (connection: AwsConnection) => ipcRenderer.invoke('cloudwatch:log-groups', connection),
-  listCloudWatchRecentEvents: (connection: AwsConnection, logGroupName: string) =>
-    ipcRenderer.invoke('cloudwatch:recent-events', connection, logGroupName),
+  listCloudWatchRecentEvents: (connection: AwsConnection, logGroupName: string, periodHours?: number) =>
+    ipcRenderer.invoke('cloudwatch:recent-events', connection, logGroupName, periodHours),
   listEc2InstanceMetrics: (connection: AwsConnection, instanceId: string) =>
     ipcRenderer.invoke('cloudwatch:ec2-instance-metrics', connection, instanceId),
   getMetricStatistics: (connection: AwsConnection, metrics: unknown[], periodHours: number) =>
     ipcRenderer.invoke('cloudwatch:metric-stats', connection, metrics, periodHours),
   getEc2AllMetricSeries: (connection: AwsConnection, instanceId: string, periodHours: number) =>
     ipcRenderer.invoke('cloudwatch:ec2-all-series', connection, instanceId, periodHours),
+  runCloudWatchQuery: (connection: AwsConnection, input: CloudWatchQueryExecutionInput) =>
+    ipcRenderer.invoke('cloudwatch:run-query', connection, input),
   listRoute53HostedZones: (connection: AwsConnection) => ipcRenderer.invoke('route53:hosted-zones', connection),
+  createRoute53HostedZone: (connection: AwsConnection, input: Route53HostedZoneCreateInput) =>
+    ipcRenderer.invoke('route53:create-hosted-zone', connection, input),
   listRoute53Records: (connection: AwsConnection, hostedZoneId: string) =>
     ipcRenderer.invoke('route53:records', connection, hostedZoneId),
   upsertRoute53Record: (connection: AwsConnection, hostedZoneId: string, record: unknown) =>
@@ -158,6 +195,8 @@ const awsLensApi = {
     ipcRenderer.invoke('overview:metrics', connection, regions),
   getOverviewStatistics: (connection: AwsConnection) =>
     ipcRenderer.invoke('overview:statistics', connection),
+  getOverviewAccountContext: (connection: AwsConnection) =>
+    ipcRenderer.invoke('overview:account-context', connection),
   getComplianceReport: (connection: AwsConnection) =>
     ipcRenderer.invoke('compliance:report', connection),
   getRelationshipMap: (connection: AwsConnection) =>
@@ -169,6 +208,7 @@ const awsLensApi = {
   openExternalUrl: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   openPath: (targetPath: string) => ipcRenderer.invoke('shell:open-path', targetPath),
   chooseEc2SshKey: () => ipcRenderer.invoke('ec2:ssh:choose-key'),
+  listEc2SshKeySuggestions: (preferredKeyName?: string) => ipcRenderer.invoke('ec2:ssh:list-key-suggestions', preferredKeyName),
   getEnterpriseSettings: () => ipcRenderer.invoke('enterprise:get-settings'),
   setEnterpriseAccessMode: (accessMode: 'read-only' | 'operator') => ipcRenderer.invoke('enterprise:set-access-mode', accessMode),
   listEnterpriseAuditEvents: () => ipcRenderer.invoke('enterprise:audit:list'),

@@ -57,6 +57,7 @@ import {
 } from '@aws-sdk/client-iam'
 
 import { awsClientConfig } from './client'
+import { getGovernanceTagDefaults } from '../phase1FoundationStore'
 import type {
   AwsConnection,
   IamAccessKeySummary,
@@ -72,6 +73,19 @@ import type {
   IamSimulationResult,
   IamUserSummary
 } from '@shared/types'
+
+const GOVERNANCE_TAG_KEYS = ['Owner', 'Environment', 'Project', 'CostCenter'] as const
+
+function resolveGovernanceTags(): Array<{ Key: string; Value: string }> {
+  const defaults = getGovernanceTagDefaults()
+  if (!defaults.inheritByDefault) {
+    return []
+  }
+
+  return GOVERNANCE_TAG_KEYS
+    .map((key) => ({ Key: key, Value: defaults.values[key]?.trim() ?? '' }))
+    .filter((tag) => Boolean(tag.Value))
+}
 
 function createClient(connection: AwsConnection): IAMClient {
   return new IAMClient(awsClientConfig(connection))
@@ -451,7 +465,10 @@ export async function createUser(
   userName: string
 ): Promise<void> {
   const client = createClient(connection)
-  await client.send(new CreateUserCommand({ UserName: userName }))
+  await client.send(new CreateUserCommand({
+    UserName: userName,
+    Tags: resolveGovernanceTags()
+  }))
 }
 
 export async function deleteUser(
