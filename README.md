@@ -22,6 +22,16 @@ A desktop AWS operator workspace built on Electron, React, and TypeScript. AWS L
 
 The current UI is organized around a left-rail workspace shell instead of a single-service dashboard. Operators select a profile and region once, then move across overview, Terraform, direct resource access, session workflows, and service-specific consoles without losing context.
 
+### Feature `v1.1.0` Highlights
+
+- Phase 1 workflow upgrades are now integrated into the main shell on `feature/v1.1.0`
+- Overview now includes account posture, billing visibility, linked-account cost context, ownership-tag coverage, and region capability hints
+- EC2 adds multi-select fleet operations, local `.ssh` discovery, and profile-aware SSH suggestions
+- Governance tagging defaults are reusable across supported create and update flows, including first-wave IAM user coverage
+- CloudWatch now supports investigation history, saved queries, reruns, and deeper service handoff flows
+- RDS and Aurora now include connection helpers backed by local vault, Secrets Manager resolution, and terminal-safe snippets
+- Route 53 now covers hosted zone bootstrap, record templates, duplicate/edit flows, and domain or health-check guidance
+
 ### Shared Shell
 
 - Left sidebar with profile and region context, pinned services, grouped AWS workspaces, and utility screens
@@ -33,13 +43,13 @@ The current UI is organized around a left-rail workspace shell instead of a sing
 
 ![AWS Lens Overview](images/overview.png)
 
-The overview screen is the new landing surface. It combines regional posture, top services, cost posture, relationship counts, insights, and quick routing into deeper consoles from the same shell.
+The overview screen is the landing surface for daily operations. It combines regional posture, top services, cost posture, relationship counts, insights, account context, billing posture, ownership-tag coverage, and quick routing into deeper consoles from the same shell.
 
 ### EC2 Workspace
 
 ![AWS Lens EC2 Workspace](images/ec2.png)
 
-The EC2 console now uses an operator-focused split layout: fleet summary cards on top, instance/volume/snapshot tabs in the center, and action-heavy detail panels for start/stop, resize, snapshots, bastion access, CloudWatch jumps, and SSM-driven workflows.
+The EC2 console uses an operator-focused split layout: fleet summary cards on top, instance/volume/snapshot tabs in the center, and action-heavy detail panels for start/stop, resize, snapshots, bastion access, CloudWatch jumps, SSH discovery, and SSM-driven workflows. Multi-select bulk actions cover the main low-risk fleet operations directly from the inventory table.
 
 ### S3 Workspace
 
@@ -155,6 +165,7 @@ The Overview screen is the landing surface for day-to-day AWS navigation. It giv
 - Regional overview tiles for EC2, Lambda, EKS, Auto Scaling, S3, RDS, CloudFormation, ECR, ECS, VPC, Load Balancers, Route 53, Security Groups, SNS, SQS, ACM, KMS, WAF, Secrets Manager, Key Pairs, CloudWatch, CloudTrail, and IAM
 - Optional global overview across multiple regions with service totals and region breakdowns
 - Cost visibility using Cost Explorer when available, with heuristic fallback when it is not
+- Account and billing posture with payer visibility, linked-account cost rollups, ownership-tag hints, and region capability guidance
 - Relationship mapping between resources with filterable edge lists and drill-down navigation
 - Statistics and insight panels grouped by compute, storage, networking, security, management, and messaging
 - Search-by-tag workflow that returns matching resources and a cost-oriented rollup
@@ -218,12 +229,12 @@ Dedicated consoles for 25+ AWS services with inventory views and targeted operat
 
 The service catalog is implemented as focused workspaces rather than generic wrappers around AWS APIs. Examples include:
 
-- `EC2`: instance inventory, snapshots, IAM instance profiles, bastion-oriented actions, and links into CloudWatch
+- `EC2`: instance inventory, snapshots, IAM instance profiles, bulk actions, SSH key discovery, bastion-oriented actions, and links into CloudWatch
 - `VPC` and `Security Groups`: network topology, gateways, interfaces, reachability context, and rule management
 - `EKS` and `ECS`: cluster and service views with helper actions that connect into the embedded terminal
-- `S3`, `ECR`, `Lambda`, and `RDS`: service-native detail views for common operator inspection flows
+- `S3`, `ECR`, `Lambda`, and `RDS`: service-native detail views for common operator inspection flows, with RDS and Aurora connection helpers for vault or secret-backed access
 - `IAM`, `Identity Center`, `STS`, `KMS`, `WAF`, `ACM`, and `Secrets Manager`: identity, crypto, perimeter, certificate, and secret-management tasks in the same desktop shell
-- `CloudFormation`, `CloudTrail`, `CloudWatch`, `Route 53`, `SNS`, and `SQS`: deployment, audit, telemetry, DNS, and messaging workflows without leaving the active AWS context
+- `CloudFormation`, `CloudTrail`, `CloudWatch`, `Route 53`, `SNS`, and `SQS`: deployment, audit, telemetry, DNS, and messaging workflows without leaving the active AWS context, including CloudWatch investigation history and Route 53 bootstrap flows
 
 ### Direct Resource Access
 
@@ -289,6 +300,7 @@ Also supports:
 
 Stores app data under Electron `userData`:
 - `local-vault.json` -- encrypted local vault for app-managed credentials and future local secrets
+- `phase1-foundations.json` -- encrypted governance tag defaults, CloudWatch saved queries/history, and DB connection presets
 - `terraform-workspace-state.json` -- encrypted project list, workspace selections, and variable set metadata
 - `terraform-state-backups/` -- automated state backup snapshots
 - `session-hub.json` -- encrypted saved assume-role targets
