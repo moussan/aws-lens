@@ -74,8 +74,10 @@ function formatCompactNumber(value: number): string {
 function serviceHintLabel(serviceHint: ServiceId | ''): string {
   if (serviceHint === 'lambda') return 'Lambda'
   if (serviceHint === 'ecs') return 'ECS'
+  if (serviceHint === 'eks') return 'EKS'
   if (serviceHint === 'rds') return 'RDS'
   if (serviceHint === 'ec2') return 'EC2'
+  if (serviceHint === 'terraform') return 'Terraform'
   return 'AWS context'
 }
 
@@ -89,6 +91,10 @@ function defaultQuery(serviceHint: ServiceId | '', sourceLabel: string): string 
     ? 'deadlock|fail|timeout'
     : serviceHint === 'ecs'
       ? 'unhealthy|throttle|error'
+      : serviceHint === 'eks'
+        ? 'failed|error|throttle|evicted'
+        : serviceHint === 'terraform'
+          ? 'error|failed|drift|alarm'
       : serviceHint === 'lambda'
         ? 'request|error|timeout'
         : 'error|exception|timeout'

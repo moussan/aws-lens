@@ -167,7 +167,7 @@ export function ObservabilityResilienceLab({
             </div>
           </div>
 
-          {report.scope.kind !== 'terraform' && (
+          {report.correlatedSignals.length > 0 && (
             <div className="obs-lab-section">
               <div className="obs-lab-section-title">Correlated Signals</div>
               <div className="obs-lab-list">

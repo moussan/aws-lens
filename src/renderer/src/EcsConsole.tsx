@@ -516,6 +516,21 @@ export function EcsConsole({
   }
 
   function handleLabSignalNavigate(signal: CorrelatedSignalReference) {
+    if (signal.serviceId === 'cloudwatch' && signal.targetView === 'logs' && selectedLogTarget) {
+      onNavigateCloudWatch?.({
+        logGroupNames: [selectedLogTarget.logGroup],
+        queryString: [
+          'fields @timestamp, @logStream, @message',
+          `| filter @message like /(?i)(${selectedServiceName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|error|exception|timeout|unhealthy)/`,
+          '| sort @timestamp desc',
+          '| limit 50'
+        ].join('\n'),
+        sourceLabel: selectedServiceName,
+        serviceHint: 'ecs'
+      })
+      return
+    }
+
     if (signal.targetView === 'logs' || signal.targetView === 'services') {
       setMainTab(signal.targetView === 'logs' ? 'tasks' : 'services')
     }

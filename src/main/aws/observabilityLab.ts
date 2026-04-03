@@ -386,6 +386,13 @@ export async function generateEksObservabilityReport(
         targetView: 'timeline'
       },
       {
+        id: 'eks-cloudwatch',
+        title: 'CloudWatch control plane logs',
+        detail: 'Inspect the shared EKS control plane log group in CloudWatch without rebuilding the query by hand.',
+        serviceId: 'cloudwatch',
+        targetView: 'logs'
+      },
+      {
         id: 'cloudtrail',
         title: 'CloudTrail',
         detail: 'Cluster update and access-path changes can be cross-checked in CloudTrail.',

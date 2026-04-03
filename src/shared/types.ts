@@ -1427,6 +1427,13 @@ export type NavigationFocus =
   | { service: 'lambda'; functionName: string }
   | { service: 'ecs'; clusterArn: string; serviceName: string }
   | { service: 'eks'; clusterName: string }
+  | {
+      service: 'cloudtrail'
+      resourceName?: string
+      startTime?: string
+      endTime?: string
+      filter?: string
+    }
   | { service: 'ec2'; instanceId?: string; volumeId?: string; tab?: 'instances' | 'volumes' | 'snapshots' }
   | {
       service: 'cloudwatch'

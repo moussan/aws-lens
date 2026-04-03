@@ -1580,6 +1580,7 @@ export function App() {
               refreshNonce={pageRefreshNonceByScreen['terraform'] ?? 0}
               onRunTerminalCommand={handleOpenTerminalCommand}
               onNavigateService={navigateToServiceWithResourceId}
+              onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })}
             />
           )}
         </ConnectedServiceScreen>
@@ -1743,7 +1744,7 @@ export function App() {
 
     if (targetScreen === 'security-groups' && targetService?.id === 'security-groups') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <SecurityGroupsConsole connection={connection} focusSecurityGroupId={getFocus('security-groups')} />}</ConnectedServiceScreen>
     if (targetScreen === 'cloudwatch' && targetService?.id === 'cloudwatch') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudWatchConsole connection={connection} focusEc2Instance={getFocus('cloudwatch')} />}</ConnectedServiceScreen>
-    if (targetScreen === 'cloudtrail' && targetService?.id === 'cloudtrail') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudTrailConsole connection={connection} />}</ConnectedServiceScreen>
+    if (targetScreen === 'cloudtrail' && targetService?.id === 'cloudtrail') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudTrailConsole connection={connection} focus={getFocus('cloudtrail')} />}</ConnectedServiceScreen>
     if (targetScreen === 'cloudformation' && targetService?.id === 'cloudformation') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <CloudFormationConsole connection={connection} refreshNonce={pageRefreshNonceByScreen['cloudformation'] ?? 0} />}</ConnectedServiceScreen>
     if (targetScreen === 'route53' && targetService?.id === 'route53') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <Route53Console connection={connection} focusRecord={getFocus('route53')} />}</ConnectedServiceScreen>
     if (targetScreen === 's3' && targetService?.id === 's3') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <S3Console connection={connection} />}</ConnectedServiceScreen>
@@ -1753,7 +1754,7 @@ export function App() {
     if (targetScreen === 'ecs' && targetService?.id === 'ecs') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcsConsole connection={connection} refreshNonce={pageRefreshNonceByScreen['ecs'] ?? 0} focusService={getFocus('ecs')} onRunTerminalCommand={handleOpenTerminalCommand} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} />}</ConnectedServiceScreen>
     if (targetScreen === 'acm' && targetService?.id === 'acm') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <AcmConsole connection={connection} onOpenRoute53={(record) => navigateWithFocus({ service: 'route53', record })} onOpenLoadBalancer={(loadBalancerArn) => navigateWithFocus({ service: 'load-balancers', loadBalancerArn })} onOpenWaf={(webAclName) => navigateWithFocus({ service: 'waf', webAclName })} />}</ConnectedServiceScreen>
     if (targetScreen === 'ecr' && targetService?.id === 'ecr') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EcrConsole connection={connection} />}</ConnectedServiceScreen>
-    if (targetScreen === 'eks' && targetService?.id === 'eks') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EksConsole connection={connection} focusClusterName={getFocus('eks')} onRunTerminalCommand={handleOpenTerminalCommand} />}</ConnectedServiceScreen>
+    if (targetScreen === 'eks' && targetService?.id === 'eks') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <EksConsole connection={connection} focusClusterName={getFocus('eks')} onRunTerminalCommand={handleOpenTerminalCommand} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} onNavigateCloudTrail={(focus) => navigateWithFocus({ service: 'cloudtrail', ...focus })} />}</ConnectedServiceScreen>
     if (targetScreen === 'iam' && targetService?.id === 'iam') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <IamConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'identity-center' && targetService?.id === 'identity-center') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <IdentityCenterConsole connection={connection} />}</ConnectedServiceScreen>
     if (targetScreen === 'secrets-manager' && targetService?.id === 'secrets-manager') return <ConnectedServiceScreen service={targetService} state={connectionState}>{(connection) => <SecretsManagerConsole connection={connection} onNavigate={(target) => {
@@ -2120,7 +2121,7 @@ export function App() {
 
         {screen === 'cloudtrail' && selectedService?.id === 'cloudtrail' && (
           <ConnectedServiceScreen service={selectedService!} state={connectionState}>
-            {(connection) => <CloudTrailConsole connection={connection} />}
+            {(connection) => <CloudTrailConsole connection={connection} focus={getFocus('cloudtrail')} />}
           </ConnectedServiceScreen>
         )}
 
@@ -2178,7 +2179,7 @@ export function App() {
         )}
         {screen === 'eks' && selectedService?.id === 'eks' && (
           <ConnectedServiceScreen service={selectedService!} state={connectionState}>
-            {(connection) => <EksConsole connection={connection} />}
+            {(connection) => <EksConsole connection={connection} focusClusterName={getFocus('eks')} onRunTerminalCommand={handleOpenTerminalCommand} onNavigateCloudWatch={(focus) => navigateWithFocus({ service: 'cloudwatch', ...focus })} onNavigateCloudTrail={(focus) => navigateWithFocus({ service: 'cloudtrail', ...focus })} />}
           </ConnectedServiceScreen>
         )}
         {screen === 'iam' && selectedService?.id === 'iam' && (
