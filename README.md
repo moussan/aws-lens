@@ -254,9 +254,14 @@ AWS Lens also includes a direct-access screen for situations where list permissi
 - Show AccessDenied fallback guidance with likely read-only permission gaps and deeper console handoff links
 - Useful for break-glass support flows and tightly scoped IAM policies
 
-### Observability and Resilience Lab (Beta)
+### Observability and Incident Workbench
 
-Operator-assistant surface for EKS clusters, ECS services, and Terraform workspaces. Provides posture analysis, telemetry gap detection, and resilience recommendations. Generates copyable artifacts: OTel YAML, awslogs snippets, Terraform snippets, and FIS template JSON.
+- Cross-navigation from EKS, ECS, and Terraform findings directly into CloudWatch, CloudTrail, and related service views
+- Safe artifact execution model with `run in terminal` support for read-only commands, shell-aware command composition, placeholder detection, and project or cluster context handoff
+- Investigation packs for recurring issues such as pod restarts, ECS desired-count gaps, Terraform drift spikes, and access-denied incidents
+- CloudWatch query workspace with saved queries, reruns, profile/region-scoped incident timeline, and clear-results/history controls
+- Investigation correlation panel that brings metric signals, recent log events, and CloudTrail activity into one tabbed workflow
+- Remediation cards that include `risk`, `rollback`, `owner`, and `verification` guidance alongside copyable or runnable artifacts
 
 ### Embedded Terminal
 
@@ -295,6 +300,15 @@ The terminal updates automatically when you change profiles, regions, or assumed
 - Drift history now includes a trend-diff view for new, resolved, and changed findings between the latest two scans
 - State operations now surface backend health and clearer lock visibility for local and S3 backends, including effective state key context and limited-inspection messaging
 - Large Terraform states now render more efficiently with grouped resource browsing, chunked initial rendering, progressive loading, and filtering
+
+### Feature `v1.4.0` Highlights
+
+- EKS, ECS, and Terraform observability findings now cross-navigate into CloudWatch, CloudTrail, and related service investigation surfaces with preserved AWS context
+- Read-only observability artifacts can now run directly in the embedded terminal when safe, including Windows-aware shell composition and Terraform/EKS context bootstrap
+- Investigation packs now cover pod restart, service under desired count, Terraform drift spike, and access denied workflows with reusable triage steps
+- CloudWatch now keeps a profile/region-scoped incident timeline alongside query history, reruns, saved queries, and focused investigation events
+- A dedicated Investigation tab correlates metric signals, recent log events, and CloudTrail activity without overwhelming the main query workspace
+- Observability remediation recommendations now include owner and verification details in addition to risk and rollback guidance
 
 ---
 

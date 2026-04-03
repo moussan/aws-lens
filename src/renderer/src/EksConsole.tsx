@@ -10,7 +10,9 @@ import type {
   EksClusterSummary,
   EksNodegroupSummary,
   EksUpgradePlan,
-  ObservabilityPostureReport
+  GeneratedArtifact,
+  ObservabilityPostureReport,
+  ServiceId
 } from '@shared/types'
 import {
   addEksToKubeconfig,
@@ -47,6 +49,18 @@ const NG_COLUMNS: { key: NgCol; label: string; color: string }[] = [
   { key: 'recommendation', label: 'Recommendation', color: '#d3b46f' },
   { key: 'instanceTypes', label: 'Instance types', color: '#f285b9' }
 ]
+
+function isWindowsShell(): boolean {
+  return /win/i.test(navigator.platform || navigator.userAgent)
+}
+
+function wrapKubectlCommand(kubeconfigPath: string, command: string): string {
+  if (isWindowsShell()) {
+    return `$env:KUBECONFIG = '${kubeconfigPath.replace(/'/g, "''")}'; ${command}`
+  }
+
+  return `export KUBECONFIG='${kubeconfigPath.replace(/'/g, `'\\''`)}' && ${command}`
+}
 
 function getNgValue(ng: EksNodegroupSummary, key: NgCol): string {
   switch (key) {
@@ -125,11 +139,15 @@ async function copyText(value: string): Promise<void> {
 export function EksConsole({
   connection,
   focusClusterName,
-  onRunTerminalCommand
+  onRunTerminalCommand,
+  onNavigateCloudWatch,
+  onNavigateCloudTrail
 }: {
   connection: AwsConnection
   focusClusterName?: { token: number; clusterName: string } | null
   onRunTerminalCommand?: (command: string) => void
+  onNavigateCloudWatch?: (focus: { logGroupNames?: string[]; queryString?: string; sourceLabel?: string; serviceHint?: ServiceId | '' }) => void
+  onNavigateCloudTrail?: (focus: { resourceName?: string; startTime?: string; endTime?: string; filter?: string }) => void
 }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -332,7 +350,53 @@ export function EksConsole({
   }, [connection, labReport, selectedCluster, sideTab])
 
   function handleLabSignalNavigate(signal: CorrelatedSignalReference) {
-    if (signal.targetView === 'timeline') setSideTab('timeline')
+    if (signal.targetView === 'timeline') {
+      setSideTab('timeline')
+      return
+    }
+
+    if (signal.serviceId === 'cloudtrail') {
+      onNavigateCloudTrail?.({
+        resourceName: selectedCluster,
+        filter: selectedCluster,
+        startTime: new Date(`${timelineStart}T00:00:00`).toISOString(),
+        endTime: new Date(`${timelineEnd}T23:59:59`).toISOString()
+      })
+      return
+    }
+
+    if (signal.serviceId === 'cloudwatch' && selectedCluster) {
+      onNavigateCloudWatch?.({
+        logGroupNames: [`/aws/eks/${selectedCluster}/cluster`],
+        queryString: [
+          'fields @timestamp, @logStream, @message',
+          `| filter @message like /(?i)(${selectedCluster.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|error|failed|throttle|evicted)/`,
+          '| sort @timestamp desc',
+          '| limit 50'
+        ].join('\n'),
+        sourceLabel: selectedCluster,
+        serviceHint: 'eks'
+      })
+    }
+  }
+
+  async function handleLabArtifactRun(artifact: GeneratedArtifact): Promise<void> {
+    setError('')
+    setMsg('')
+
+    try {
+      let command = artifact.content
+
+      if (selectedCluster && /\bkubectl\b/.test(artifact.content)) {
+        const session = await prepareEksKubectlSession(connection, selectedCluster)
+        command = wrapKubectlCommand(session.path, artifact.content)
+      }
+
+      onRunTerminalCommand?.(command)
+      setMsg(`${artifact.title} sent to the app terminal`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
   }
 
   function openKubeconfigForm() {
@@ -948,6 +1012,7 @@ export function EksConsole({
                     loading={labLoading}
                     error={labError}
                     onRefresh={() => void loadLab()}
+                    onRunArtifact={handleLabArtifactRun}
                     onNavigateSignal={handleLabSignalNavigate}
                   />
                 </section>

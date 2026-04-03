@@ -1129,6 +1129,30 @@ export type CloudWatchQueryHistoryEntry = {
 
 export type CloudWatchQueryHistoryInput = Omit<CloudWatchQueryHistoryEntry, 'id' | 'executedAt'>
 
+export type CloudWatchInvestigationEventKind =
+  | 'focus'
+  | 'open-log-group'
+  | 'investigate-log-group'
+  | 'run-query'
+  | 'save-query'
+
+export type CloudWatchInvestigationEventSeverity = 'info' | 'success' | 'warning' | 'error'
+
+export type CloudWatchInvestigationHistoryEntry = {
+  id: string
+  profile: string
+  region: string
+  serviceHint: ServiceId | ''
+  logGroupNames: string[]
+  kind: CloudWatchInvestigationEventKind
+  title: string
+  detail: string
+  severity: CloudWatchInvestigationEventSeverity
+  occurredAt: string
+}
+
+export type CloudWatchInvestigationHistoryInput = Omit<CloudWatchInvestigationHistoryEntry, 'id' | 'occurredAt'>
+
 export type CloudWatchQueryExecutionInput = {
   queryString: string
   logGroupNames: string[]
@@ -1427,6 +1451,13 @@ export type NavigationFocus =
   | { service: 'lambda'; functionName: string }
   | { service: 'ecs'; clusterArn: string; serviceName: string }
   | { service: 'eks'; clusterName: string }
+  | {
+      service: 'cloudtrail'
+      resourceName?: string
+      startTime?: string
+      endTime?: string
+      filter?: string
+    }
   | { service: 'ec2'; instanceId?: string; volumeId?: string; tab?: 'instances' | 'volumes' | 'snapshots' }
   | {
       service: 'cloudwatch'
@@ -2666,6 +2697,8 @@ export type ObservabilityRecommendation = {
   expectedBenefit: string
   risk: string
   rollback: string
+  owner?: string
+  verificationStep?: string
   prerequisiteLevel: PrerequisiteLevel
   setupEffort: SetupEffort
   labels: string[]
@@ -2698,6 +2731,22 @@ export type ResilienceExperimentSuggestion = {
   artifact?: GeneratedArtifact
 }
 
+export type InvestigationPackStep = {
+  id: string
+  title: string
+  detail: string
+  artifact?: GeneratedArtifact
+}
+
+export type InvestigationPack = {
+  id: string
+  title: string
+  summary: string
+  problem: string
+  labels: string[]
+  steps: InvestigationPackStep[]
+}
+
 export type ObservabilityPostureArea = {
   id: string
   label: string
@@ -2720,6 +2769,7 @@ export type ObservabilityPostureReport = {
   summary: ObservabilityPostureArea[]
   findings: ObservabilityFinding[]
   recommendations: ObservabilityRecommendation[]
+  investigationPacks: InvestigationPack[]
   experiments: ResilienceExperimentSuggestion[]
   artifacts: GeneratedArtifact[]
   safetyNotes: Array<{

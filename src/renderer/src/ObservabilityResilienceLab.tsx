@@ -42,6 +42,25 @@ export function ObservabilityResilienceLab({
     window.setTimeout(() => setCopiedId((current) => (current === id ? '' : current)), 1200)
   }
 
+  function renderArtifactActions(artifact: GeneratedArtifact) {
+    return (
+      <>
+        <div className="obs-lab-meta"><strong>Artifact:</strong> {artifact.title} ({artifactBadge(artifact.type)})</div>
+        <div className="obs-lab-meta"><strong>Artifact Safety:</strong> {artifact.safety}</div>
+        <div className="obs-lab-actions">
+          <button type="button" onClick={() => void copyText(artifact.id, artifact.content)}>
+            {copiedId === artifact.id ? 'Copied' : artifact.copyLabel}
+          </button>
+          {artifact.isRunnable && onRunArtifact && (
+            <button type="button" className="accent" onClick={() => onRunArtifact(artifact)}>
+              {artifact.runLabel}
+            </button>
+          )}
+        </div>
+      </>
+    )
+  }
+
   return (
     <div className="obs-lab">
       <div className="obs-lab-header">
@@ -112,19 +131,53 @@ export function ObservabilityResilienceLab({
                     <span className="obs-lab-type">{item.type}</span>
                   </div>
                   <p>{item.summary}</p>
-                  <div className="obs-lab-meta"><strong>Why:</strong> {item.rationale}</div>
-                  <div className="obs-lab-meta"><strong>Benefit:</strong> {item.expectedBenefit}</div>
-                  <div className="obs-lab-meta"><strong>Risk:</strong> {item.risk}</div>
-                  <div className="obs-lab-meta"><strong>Rollback:</strong> {item.rollback}</div>
+                  <div className="obs-lab-rec-grid">
+                    <div className="obs-lab-meta"><strong>Why:</strong> {item.rationale}</div>
+                    <div className="obs-lab-meta"><strong>Benefit:</strong> {item.expectedBenefit}</div>
+                    <div className="obs-lab-meta"><strong>Risk:</strong> {item.risk}</div>
+                    <div className="obs-lab-meta"><strong>Rollback:</strong> {item.rollback}</div>
+                    <div className="obs-lab-meta"><strong>Owner:</strong> {item.owner || 'Unassigned'}</div>
+                    <div className="obs-lab-meta"><strong>Verification:</strong> {item.verificationStep || 'Verify the related signal and findings after the change.'}</div>
+                  </div>
                   <div className="obs-lab-tags">
                     {item.labels.map((label) => <span key={label} className="obs-lab-tag">{label}</span>)}
                     <span className="obs-lab-tag">Prereq: {item.prerequisiteLevel}</span>
                     <span className="obs-lab-tag">Effort: {item.setupEffort}</span>
                   </div>
+                  {item.artifact && renderArtifactActions(item.artifact)}
                 </article>
               ))}
             </div>
           </div>
+
+          {report.investigationPacks.length > 0 && (
+            <div className="obs-lab-section">
+              <div className="obs-lab-section-title">Investigation Packs</div>
+              <div className="obs-lab-list">
+                {report.investigationPacks.map((pack) => (
+                  <article key={pack.id} className="obs-lab-card">
+                    <div className="obs-lab-card-top">
+                      <h4>{pack.title}</h4>
+                      <span className="obs-lab-type">{pack.problem}</span>
+                    </div>
+                    <p>{pack.summary}</p>
+                    <div className="obs-lab-tags">
+                      {pack.labels.map((label) => <span key={label} className="obs-lab-tag">{label}</span>)}
+                    </div>
+                    <div className="obs-lab-list">
+                      {pack.steps.map((step) => (
+                        <article key={step.id} className="obs-lab-card">
+                          <h4>{step.title}</h4>
+                          <div className="obs-lab-detail">{step.detail}</div>
+                          {step.artifact && renderArtifactActions(step.artifact)}
+                        </article>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="obs-lab-section">
             <div className="obs-lab-section-title">Generated Artifacts</div>
@@ -137,17 +190,7 @@ export function ObservabilityResilienceLab({
                   </div>
                   <p>{artifact.summary}</p>
                   <pre className="obs-lab-code"><code>{artifact.content}</code></pre>
-                  <div className="obs-lab-meta"><strong>Safety:</strong> {artifact.safety}</div>
-                  <div className="obs-lab-actions">
-                    <button type="button" onClick={() => void copyText(artifact.id, artifact.content)}>
-                      {copiedId === artifact.id ? 'Copied' : artifact.copyLabel}
-                    </button>
-                    {artifact.isRunnable && onRunArtifact && (
-                      <button type="button" className="accent" onClick={() => onRunArtifact(artifact)}>
-                        {artifact.runLabel}
-                      </button>
-                    )}
-                  </div>
+                  {renderArtifactActions(artifact)}
                 </article>
               ))}
             </div>
@@ -167,7 +210,7 @@ export function ObservabilityResilienceLab({
             </div>
           </div>
 
-          {report.scope.kind !== 'terraform' && (
+          {report.correlatedSignals.length > 0 && (
             <div className="obs-lab-section">
               <div className="obs-lab-section-title">Correlated Signals</div>
               <div className="obs-lab-list">

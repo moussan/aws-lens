@@ -347,6 +347,18 @@ function formatProjectPath(path: string): string {
   return `...${path.slice(-53)}`
 }
 
+function isWindowsShell(): boolean {
+  return /win/i.test(navigator.platform || navigator.userAgent)
+}
+
+function wrapProjectCommand(rootPath: string, command: string): string {
+  if (isWindowsShell()) {
+    return `Set-Location -LiteralPath '${rootPath.replace(/'/g, "''")}'; ${command}`
+  }
+
+  return `cd '${rootPath.replace(/'/g, `'\\''`)}' && ${command}`
+}
+
 function truncateMiddle(value: string, options?: { start?: number; end?: number }): string {
   const start = options?.start ?? 20
   const end = options?.end ?? 14
@@ -3517,11 +3529,12 @@ function HistoryTab({
   )
 }
 
-export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCommand, onNavigateService }: {
+export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCommand, onNavigateService, onNavigateCloudWatch }: {
   connection: AwsConnection
   refreshNonce?: number
   onRunTerminalCommand?: (command: string) => void
   onNavigateService?: (serviceId: ServiceId, resourceId?: string) => void
+  onNavigateCloudWatch?: (focus: { logGroupNames?: string[]; queryString?: string; sourceLabel?: string; serviceHint?: ServiceId | '' }) => void
 }) {
   const [uiState, setUiState] = useState<TerraformUiState>(() => loadTerraformUiState())
   const [cliInfo, setCliInfo] = useState<TerraformCliInfo | null>(null)
@@ -4292,13 +4305,35 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
   }
 
   function handleLabArtifactRun(artifact: GeneratedArtifact) {
-    onRunTerminalCommand?.(artifact.content)
+    const command = detail ? wrapProjectCommand(detail.rootPath, artifact.content) : artifact.content
+    onRunTerminalCommand?.(command)
     setMsg(`${cliDisplayName(cliInfo)} artifact opened in terminal`)
   }
 
   function handleLabSignalNavigate(signal: CorrelatedSignalReference) {
     if (signal.targetView === 'drift') {
       setDetailTab('drift')
+      return
+    }
+
+    if (signal.serviceId === 'cloudwatch' && detail) {
+      const logGroupNames = detail.inventory
+        .filter((item) => item.type === 'aws_cloudwatch_log_group')
+        .map((item) => String(item.values.name ?? ''))
+        .filter(Boolean)
+        .slice(0, 6)
+
+      onNavigateCloudWatch?.({
+        logGroupNames,
+        queryString: [
+          'fields @timestamp, @message',
+          `| filter @message like /(?i)(${detail.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|error|failed|drift|alarm)/`,
+          '| sort @timestamp desc',
+          '| limit 50'
+        ].join('\n'),
+        sourceLabel: detail.name,
+        serviceHint: 'terraform'
+      })
     }
   }
 
