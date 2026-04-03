@@ -1027,6 +1027,13 @@
   gap: 10px;
 }
 
+.tf-history-card-list-scroll {
+  max-height: 560px;
+  overflow-y: auto;
+  padding-right: 4px;
+  align-content: start;
+}
+
 .tf-linked-card,
 .tf-history-card,
 .tf-remediation-card {
@@ -1487,6 +1494,22 @@
 }
 
 .tf-state-card-danger {
+  border-color: rgba(231, 76, 60, 0.65);
+  background: linear-gradient(180deg, rgba(231, 76, 60, 0.15), rgba(32, 37, 45, 1));
+}
+
+.tf-state-health-card.tf-state-health-healthy {
+  border-color: rgba(46, 204, 113, 0.45);
+  background: linear-gradient(180deg, rgba(46, 204, 113, 0.12), rgba(32, 37, 45, 1));
+}
+
+.tf-state-health-card.tf-state-health-warning,
+.tf-state-health-card.tf-state-health-limited {
+  border-color: rgba(243, 156, 18, 0.55);
+  background: linear-gradient(180deg, rgba(243, 156, 18, 0.12), rgba(32, 37, 45, 1));
+}
+
+.tf-state-health-card.tf-state-health-error {
   border-color: rgba(231, 76, 60, 0.65);
   background: linear-gradient(180deg, rgba(231, 76, 60, 0.15), rgba(32, 37, 45, 1));
 }
@@ -2137,6 +2160,36 @@
   background: linear-gradient(180deg, rgba(13, 20, 30, 0.92), rgba(10, 15, 22, 0.96));
 }
 
+.tf-resource-group {
+  padding: 10px;
+  border-bottom: 1px solid rgba(145, 176, 207, 0.08);
+}
+
+.tf-resource-group:last-child {
+  border-bottom: 0;
+}
+
+.tf-resource-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #9ca7b7;
+  font-size: 11px;
+}
+
+.tf-resource-group-head strong {
+  color: #edf1f6;
+  font-size: 13px;
+}
+
+.tf-resource-load-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
 .tf-resource-table__category {
   width: 120px;
 }
@@ -2724,6 +2777,51 @@
 .tf-history-card-metrics {
   font-size: 11px;
   color: #9ca7b7;
+}
+
+.tf-trend-diff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.tf-trend-diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tf-trend-diff-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid #2a313c;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #111820;
+  font-size: 12px;
+}
+
+.tf-trend-diff-row code {
+  color: #9ecbff;
+  font-size: 11px;
+}
+
+.tf-trend-diff-row span {
+  color: #d7dde7;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tf-trend-diff-row strong {
+  font-size: 11px;
+  color: #edf1f6;
+  text-align: right;
 }
 
 .tf-history-detail-actions {

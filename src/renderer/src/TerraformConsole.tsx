@@ -73,7 +73,12 @@ import {
 } from './terraformApi'
 import { ObservabilityResilienceLab } from './ObservabilityResilienceLab'
 
-type DetailTab = 'actions' | 'state' | 'resources' | 'drift' | 'lab' | 'history'
+type DetailTab = 'operations' | 'actions' | 'state' | 'resources' | 'drift' | 'lab' | 'history'
+
+type StateOperationDraft =
+  | { mode: 'import'; importAddress: string; importId: string }
+  | { mode: 'move'; moveFrom: string; moveTo: string }
+  | { mode: 'remove'; removeAddress: string }
 
 /* ── db_password validation ───────────────────────────────── */
 
@@ -186,6 +191,124 @@ function gitStatusSummary(project: TerraformProject): string {
     return `${formatGitHead(git.branch, git.shortCommitSha, git.isDetached)}${git.isDirty ? ' • dirty' : ' • clean'}`
   }
   return git.error || 'Git metadata unavailable.'
+}
+
+function OperationsCenterTab({
+  project,
+  driftReport,
+  driftLoading,
+  driftError,
+  lastLog,
+  onOpenActions,
+  onOpenDrift,
+  onOpenState,
+  onOpenHistory
+}: {
+  project: TerraformProject
+  driftReport: TerraformDriftReport | null
+  driftLoading: boolean
+  driftError: string
+  lastLog: TerraformCommandLog | null
+  onOpenActions: () => void
+  onOpenDrift: () => void
+  onOpenState: () => void
+  onOpenHistory: () => void
+}) {
+  const plan = project.lastPlanSummary
+  const driftSummary = driftReport?.summary
+  const actionableDriftCount = driftSummary
+    ? driftSummary.statusCounts.drifted + driftSummary.statusCounts.missing_in_aws + driftSummary.statusCounts.unmanaged_in_aws
+    : 0
+
+  return (
+    <>
+      <div className="tf-section">
+        <div className="tf-section-head">
+          <div>
+            <h3>Operations Center</h3>
+            <div className="tf-section-hint">
+              Plan, drift, and state posture for the current project in one operating surface.
+            </div>
+          </div>
+          <div className="tf-drift-actions">
+            <button type="button" className="tf-toolbar-btn" onClick={onOpenActions}>Open Actions</button>
+            <button type="button" className="tf-toolbar-btn" onClick={onOpenDrift}>Open Drift</button>
+            <button type="button" className="tf-toolbar-btn" onClick={onOpenState}>Open State</button>
+            <button type="button" className="tf-toolbar-btn" onClick={onOpenHistory}>Open History</button>
+          </div>
+        </div>
+        <div className="tf-overview-card-grid">
+          <div className={`tf-overview-card ${plan.hasChanges ? (plan.hasDestructiveChanges ? 'warning' : 'info') : 'success'}`}>
+            <span>Plan posture</span>
+            <strong>{plan.hasChanges ? `${plan.affectedResources} affected` : 'No saved changes'}</strong>
+            <span>{plan.create} create · {plan.update} update · {plan.delete} delete · {plan.replace} replace</span>
+          </div>
+          <div className={`tf-overview-card ${driftSummary ? (actionableDriftCount > 0 ? 'warning' : 'success') : 'info'}`}>
+            <span>Drift posture</span>
+            <strong>{driftLoading ? 'Scanning...' : driftSummary ? `${actionableDriftCount} actionable` : 'Not scanned yet'}</strong>
+            <span>{driftError ? driftError : driftSummary ? `${driftSummary.verifiedCount} verified · ${driftSummary.statusCounts.in_sync} in sync` : 'Run a drift re-scan to populate this surface.'}</span>
+          </div>
+          <div className={`tf-overview-card ${project.backendHealth.status === 'healthy' ? 'success' : project.backendHealth.status === 'error' ? 'warning' : 'info'}`}>
+            <span>State posture</span>
+            <strong>{project.backendHealth.summary}</strong>
+            <span>{project.backendHealth.lockSummary}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="tf-state-card-grid">
+        <div className="tf-state-card">
+          <h3>Plan Summary</h3>
+          <div className="tf-kv">
+            <div className="tf-kv-row"><div className="tf-kv-label">Mode</div><div className="tf-kv-value">{plan.request.mode}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Affected resources</div><div className="tf-kv-value">{plan.affectedResources}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Destructive</div><div className="tf-kv-value">{plan.hasDestructiveChanges ? 'Yes' : 'No'}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Delete-heavy</div><div className="tf-kv-value">{plan.isDeleteHeavy ? 'Yes' : 'No'}</div></div>
+          </div>
+          <div className="tf-state-inline-note">
+            {plan.hasChanges ? `Services touched: ${plan.affectedServices.join(', ') || 'n/a'}` : 'No saved plan deltas are currently stored for this project.'}
+          </div>
+        </div>
+
+        <div className="tf-state-card">
+          <h3>Drift Summary</h3>
+          <div className="tf-kv">
+            <div className="tf-kv-row"><div className="tf-kv-label">Last scan</div><div className="tf-kv-value">{driftSummary ? formatIsoDate(driftSummary.scannedAt) : '-'}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Actionable</div><div className="tf-kv-value">{driftSummary ? actionableDriftCount : '-'}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Unsupported</div><div className="tf-kv-value">{driftSummary?.statusCounts.unsupported ?? '-'}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Snapshots</div><div className="tf-kv-value">{driftReport?.history.snapshots.length ?? '-'}</div></div>
+          </div>
+          <div className="tf-state-inline-note">
+            {driftError || (driftSummary ? `${driftSummary.statusCounts.drifted} drifted · ${driftSummary.statusCounts.missing_in_aws} missing · ${driftSummary.statusCounts.unmanaged_in_aws} unmanaged` : 'Drift history is empty until the first re-scan completes.')}
+          </div>
+        </div>
+
+        <div className="tf-state-card">
+          <h3>State Summary</h3>
+          <div className="tf-kv">
+            <div className="tf-kv-row"><div className="tf-kv-label">Backend</div><div className="tf-kv-value">{project.metadata.backend.label}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">State source</div><div className="tf-kv-value">{project.stateSource || '-'}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">State addresses</div><div className="tf-kv-value">{project.stateAddresses.length}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Backups</div><div className="tf-kv-value">{project.stateBackups.length}</div></div>
+          </div>
+          <div className="tf-state-inline-note">{project.backendHealth.lockSummary}</div>
+        </div>
+      </div>
+
+      <div className="tf-section">
+        <h3>Recent Activity</h3>
+        {lastLog ? (
+          <div className="tf-kv">
+            <div className="tf-kv-row"><div className="tf-kv-label">Last command</div><div className="tf-kv-value">{lastLog.command}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Started</div><div className="tf-kv-value">{formatIsoDate(lastLog.startedAt)}</div></div>
+            <div className="tf-kv-row"><div className="tf-kv-label">Result</div><div className="tf-kv-value">{lastLog.success == null ? 'Running' : lastLog.success ? 'Success' : 'Failed'}</div></div>
+          </div>
+        ) : (
+          <SvcState variant="empty" message="No command activity recorded yet for this project." />
+        )}
+      </div>
+    </>
+  )
 }
 
 function planCommitMismatchWarning(project: TerraformProject): string {
@@ -2150,6 +2273,7 @@ function StateTab({
   project,
   running,
   lastLog,
+  draft,
   onImport,
   onMove,
   onRemove,
@@ -2159,6 +2283,7 @@ function StateTab({
   project: TerraformProject
   running: boolean
   lastLog: TerraformCommandLog | null
+  draft: StateOperationDraft | null
   onImport: (address: string, importId: string) => void
   onMove: (fromAddress: string, toAddress: string) => void
   onRemove: (address: string) => void
@@ -2174,11 +2299,28 @@ function StateTab({
   const stateAddresses = useMemo(() => project.stateAddresses.slice().sort(), [project.stateAddresses])
   const latestBackup = project.latestStateBackup
   const lockInfo = project.stateLockInfo
+  const backendHealth = project.backendHealth
   const lastStateLog = lastLog && ['import', 'state-mv', 'state-rm', 'force-unlock'].includes(lastLog.command) ? lastLog : null
+  const backendHealthCardClass = `tf-state-meta-card tf-state-health-card tf-state-health-${backendHealth.status}`
 
   useEffect(() => {
     setUnlockId(project.stateLockInfo?.lockId ?? '')
   }, [project.stateLockInfo?.lockId])
+
+  useEffect(() => {
+    if (!draft) return
+    if (draft.mode === 'import') {
+      setImportAddress(draft.importAddress)
+      setImportId(draft.importId)
+      return
+    }
+    if (draft.mode === 'move') {
+      setMoveFrom(draft.moveFrom)
+      setMoveTo(draft.moveTo)
+      return
+    }
+    setRemoveAddress(draft.removeAddress)
+  }, [draft])
 
   return (
     <>
@@ -2211,6 +2353,11 @@ function StateTab({
             <div className="tf-state-meta-subtle">
               {latestBackup ? latestBackup.path : 'Stored under Electron userData in a project-scoped backup folder.'}
             </div>
+          </div>
+          <div className={backendHealthCardClass}>
+            <div className="tf-state-meta-label">Backend health</div>
+            <div className="tf-state-meta-value">{backendHealth.summary}</div>
+            <div className="tf-state-meta-subtle">{backendHealth.lockSummary}</div>
           </div>
         </div>
       </div>
@@ -2287,17 +2434,20 @@ function StateTab({
       <div className="tf-section">
         <div className="tf-state-card-grid">
           <div className="tf-state-card">
-            <h3>Lock Status</h3>
+            <h3>Backend Health</h3>
             <div className="tf-kv">
               <div className="tf-kv-row"><div className="tf-kv-label">Backend</div><div className="tf-kv-value">{project.metadata.backendType}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Health</div><div className="tf-kv-value">{backendHealth.summary}</div></div>
+              <div className="tf-kv-row"><div className="tf-kv-label">Lock visibility</div><div className="tf-kv-value">{backendHealth.lockSummary}</div></div>
               <div className="tf-kv-row"><div className="tf-kv-label">Inspection</div><div className="tf-kv-value">{lockInfo?.supported ? 'Available' : 'Limited'}</div></div>
               <div className="tf-kv-row"><div className="tf-kv-label">Lock ID</div><div className="tf-kv-value">{lockInfo?.lockId || '(not detected)'}</div></div>
               <div className="tf-kv-row"><div className="tf-kv-label">Operation</div><div className="tf-kv-value">{lockInfo?.operation || '-'}</div></div>
               <div className="tf-kv-row"><div className="tf-kv-label">Who</div><div className="tf-kv-value">{lockInfo?.who || '-'}</div></div>
               <div className="tf-kv-row"><div className="tf-kv-label">Created</div><div className="tf-kv-value">{lockInfo?.created ? formatIsoDate(lockInfo.created) : '-'}</div></div>
             </div>
-            {lockInfo?.message && <div className="tf-state-inline-note">{lockInfo.message}</div>}
-            {lockInfo?.infoPath && <div className="tf-state-inline-note">Lock info file: {lockInfo.infoPath}</div>}
+            {backendHealth.details.map((detail) => (
+              <div key={detail} className="tf-state-inline-note">{detail}</div>
+            ))}
           </div>
 
           <div className="tf-state-card tf-state-card-danger">
@@ -2397,9 +2547,12 @@ function WorkspaceControls({
 /* ── Resources Tab ────────────────────────────────────────── */
 
 function ResourcesTab({ project }: { project: TerraformProject }) {
+  const RESOURCE_ROWS_PAGE_SIZE = 150
   const rows = project.resourceRows
   const [categoryFilter, setCategoryFilter] = useState('all')
+  const [groupBy, setGroupBy] = useState<'none' | 'category' | 'type' | 'region'>('category')
   const [query, setQuery] = useState('')
+  const [visibleRowCount, setVisibleRowCount] = useState(RESOURCE_ROWS_PAGE_SIZE)
   const categories = useMemo(
     () => [...new Set(rows.map((row) => row.category).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
     [rows]
@@ -2421,6 +2574,46 @@ function ResourcesTab({ project }: { project: TerraformProject }) {
 
     return haystack.includes(normalizedQuery)
   }), [categoryFilter, normalizedQuery, rows])
+  const groupedRows = useMemo(() => {
+    if (groupBy === 'none') {
+      return [{ key: 'all', label: 'All resources', rows: filteredRows }]
+    }
+
+    const groups = new Map<string, typeof filteredRows>()
+    for (const row of filteredRows) {
+      const key = groupBy === 'category'
+        ? row.category || 'uncategorized'
+        : groupBy === 'type'
+          ? row.type || 'unknown'
+          : row.region || 'global'
+      const existing = groups.get(key)
+      if (existing) {
+        existing.push(row)
+      } else {
+        groups.set(key, [row])
+      }
+    }
+
+    return [...groups.entries()]
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+      .map(([key, groupRows]) => ({ key, label: key, rows: groupRows }))
+  }, [filteredRows, groupBy])
+  const visibleRows = useMemo(() => {
+    let remaining = visibleRowCount
+    return groupedRows.map((group) => {
+      if (remaining <= 0) {
+        return { ...group, rows: [] }
+      }
+      const nextRows = group.rows.slice(0, remaining)
+      remaining -= nextRows.length
+      return { ...group, rows: nextRows }
+    }).filter((group) => group.rows.length > 0)
+  }, [groupedRows, visibleRowCount])
+  const hasMoreRows = filteredRows.length > visibleRowCount
+
+  useEffect(() => {
+    setVisibleRowCount(RESOURCE_ROWS_PAGE_SIZE)
+  }, [categoryFilter, query, groupBy, rows])
 
   return (
     <>
@@ -2443,6 +2636,15 @@ function ResourcesTab({ project }: { project: TerraformProject }) {
                 ))}
               </select>
             </div>
+            <div className="tf-history-filter-group">
+              <label>Group by</label>
+              <select value={groupBy} onChange={(event) => setGroupBy(event.target.value as 'none' | 'category' | 'type' | 'region')}>
+                <option value="category">Category</option>
+                <option value="type">Type</option>
+                <option value="region">Region</option>
+                <option value="none">None</option>
+              </select>
+            </div>
             <div className="tf-history-filter-group tf-resource-search">
               <label>Search</label>
               <input
@@ -2461,55 +2663,75 @@ function ResourcesTab({ project }: { project: TerraformProject }) {
         <div className="tf-section"><SvcState variant="no-filter-matches" resourceName="resources" /></div>
       ) : (
         <div className="tf-section">
-          <div className="tf-resource-table-wrap">
-            <table className="tf-data-table tf-resource-table">
-              <colgroup>
-                <col className="tf-resource-table__category" />
-                <col className="tf-resource-table__address" />
-                <col className="tf-resource-table__type" />
-                <col className="tf-resource-table__arn" />
-                <col className="tf-resource-table__region" />
-                <col className="tf-resource-table__changed-by" />
-                <col className="tf-resource-table__tags" />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th>Address</th>
-                  <th>Type</th>
-                  <th>Arn</th>
-                  <th>Region</th>
-                  <th>ChangedBy</th>
-                  <th>Tags</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.map((row) => (
-                  <tr key={row.address}>
-                    <td>
-                      <span className="tf-resource-badge">{row.category}</span>
-                    </td>
-                    <td title={row.address}>
-                      <code className="tf-table-code tf-table-code--strong">{truncateMiddle(row.address, { start: 26, end: 18 })}</code>
-                    </td>
-                    <td title={row.type}>
-                      <code className="tf-table-code">{row.type}</code>
-                    </td>
-                    <td title={row.arn || '-'}>
-                      {row.arn ? <code className="tf-table-code">{truncateMiddle(row.arn, { start: 18, end: 22 })}</code> : '-'}
-                    </td>
-                    <td>{row.region || '-'}</td>
-                    <td title={row.changedBy || '-'}>
-                      <span className="tf-table-text">{row.changedBy || '-'}</span>
-                    </td>
-                    <td title={row.tags || '-'}>
-                      <span className="tf-table-text">{formatResourceTagsSummary(row.tags)}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="tf-section-hint">
+            Rendering {Math.min(visibleRowCount, filteredRows.length)} of {filteredRows.length} rows. Large states stay chunked to keep the table responsive.
           </div>
+          <div className="tf-resource-table-wrap">
+            {visibleRows.map((group) => (
+              <div key={group.key} className="tf-resource-group">
+                {groupBy !== 'none' && (
+                  <div className="tf-resource-group-head">
+                    <strong>{group.label}</strong>
+                    <span>{group.rows.length} shown / {groupedRows.find((item) => item.key === group.key)?.rows.length ?? group.rows.length} total</span>
+                  </div>
+                )}
+                <table className="tf-data-table tf-resource-table">
+                  <colgroup>
+                    <col className="tf-resource-table__category" />
+                    <col className="tf-resource-table__address" />
+                    <col className="tf-resource-table__type" />
+                    <col className="tf-resource-table__arn" />
+                    <col className="tf-resource-table__region" />
+                    <col className="tf-resource-table__changed-by" />
+                    <col className="tf-resource-table__tags" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>Category</th>
+                      <th>Address</th>
+                      <th>Type</th>
+                      <th>Arn</th>
+                      <th>Region</th>
+                      <th>ChangedBy</th>
+                      <th>Tags</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.rows.map((row) => (
+                      <tr key={row.address}>
+                        <td>
+                          <span className="tf-resource-badge">{row.category}</span>
+                        </td>
+                        <td title={row.address}>
+                          <code className="tf-table-code tf-table-code--strong">{truncateMiddle(row.address, { start: 26, end: 18 })}</code>
+                        </td>
+                        <td title={row.type}>
+                          <code className="tf-table-code">{row.type}</code>
+                        </td>
+                        <td title={row.arn || '-'}>
+                          {row.arn ? <code className="tf-table-code">{truncateMiddle(row.arn, { start: 18, end: 22 })}</code> : '-'}
+                        </td>
+                        <td>{row.region || '-'}</td>
+                        <td title={row.changedBy || '-'}>
+                          <span className="tf-table-text">{row.changedBy || '-'}</span>
+                        </td>
+                        <td title={row.tags || '-'}>
+                          <span className="tf-table-text">{formatResourceTagsSummary(row.tags)}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </div>
+          {hasMoreRows && (
+            <div className="tf-resource-load-more">
+              <button type="button" className="tf-toolbar-btn" onClick={() => setVisibleRowCount((current) => current + RESOURCE_ROWS_PAGE_SIZE)}>
+                Load More Resources
+              </button>
+            </div>
+          )}
         </div>
       )}
     </>
@@ -2568,6 +2790,52 @@ function driftItemKey(item: TerraformDriftItem): string {
   return `${item.terraformAddress}|${item.resourceType}|${item.cloudIdentifier}|${item.logicalName}|${item.status}`
 }
 
+function driftSnapshotIdentity(item: TerraformDriftItem): string {
+  return `${item.terraformAddress}|${item.resourceType}|${item.cloudIdentifier}|${item.logicalName}`
+}
+
+type DriftSnapshotChangeSummary = {
+  newIssues: TerraformDriftItem[]
+  resolvedIssues: TerraformDriftItem[]
+  changedItems: Array<{ latest: TerraformDriftItem; previous: TerraformDriftItem }>
+}
+
+function isActionableDriftStatus(status: TerraformDriftStatus): boolean {
+  return status === 'drifted' || status === 'missing_in_aws' || status === 'unmanaged_in_aws'
+}
+
+function summarizeSnapshotChanges(report: TerraformDriftReport | null): DriftSnapshotChangeSummary | null {
+  const latest = report?.history.snapshots[0]
+  const previous = report?.history.snapshots[1]
+  if (!latest || !previous) return null
+
+  const latestMap = new Map(latest.items.map((item) => [driftSnapshotIdentity(item), item]))
+  const previousMap = new Map(previous.items.map((item) => [driftSnapshotIdentity(item), item]))
+
+  const newIssues = latest.items.filter((item) => {
+    if (!isActionableDriftStatus(item.status)) return false
+    const prior = previousMap.get(driftSnapshotIdentity(item))
+    return !prior || !isActionableDriftStatus(prior.status)
+  })
+
+  const resolvedIssues = previous.items.filter((item) => {
+    if (!isActionableDriftStatus(item.status)) return false
+    const current = latestMap.get(driftSnapshotIdentity(item))
+    return !current || !isActionableDriftStatus(current.status)
+  })
+
+  const changedItems = latest.items.flatMap((item) => {
+    const prior = previousMap.get(driftSnapshotIdentity(item))
+    if (!prior) return []
+    const priorDiff = prior.differences.map((difference) => `${difference.key}:${difference.terraformValue}:${difference.liveValue}`).join('|')
+    const currentDiff = item.differences.map((difference) => `${difference.key}:${difference.terraformValue}:${difference.liveValue}`).join('|')
+    if (prior.status === item.status && priorDiff === currentDiff) return []
+    return [{ latest: item, previous: prior }]
+  })
+
+  return { newIssues, resolvedIssues, changedItems }
+}
+
 function DriftTab({
   report,
   loading,
@@ -2580,6 +2848,9 @@ function DriftTab({
   onTypeFilterChange,
   onSelectItem,
   onRefresh,
+  onPrepareImport,
+  onPrepareMove,
+  onPrepareRemove,
   onOpenConsole,
   onRunStateShow,
   onNavigateService
@@ -2595,11 +2866,15 @@ function DriftTab({
   onTypeFilterChange: (value: string) => void
   onSelectItem: (key: string) => void
   onRefresh: () => void
+  onPrepareImport: (item: TerraformDriftItem) => void
+  onPrepareMove: (item: TerraformDriftItem) => void
+  onPrepareRemove: (item: TerraformDriftItem) => void
   onOpenConsole: (item: TerraformDriftItem) => void
   onRunStateShow: (item: TerraformDriftItem) => void
   onNavigateService?: (serviceId: ServiceId, resourceId?: string) => void
 }) {
   const items = report?.items ?? []
+  const snapshotChanges = useMemo(() => summarizeSnapshotChanges(report), [report])
   const resourceTypes = useMemo(
     () => report?.summary.resourceTypeCounts.map((entry) => entry.resourceType) ?? [],
     [report]
@@ -2615,6 +2890,7 @@ function DriftTab({
     () => filteredItems.find((item) => driftItemKey(item) === selectedKey) ?? filteredItems[0] ?? null,
     [filteredItems, selectedKey]
   )
+  const selectedMoveTarget = selectedItem?.relatedTerraformAddresses[0] ?? ''
   const summaryCards = report ? [
     { label: 'Drifted', value: report.summary.statusCounts.drifted, tone: 'warning' },
     { label: 'Missing', value: report.summary.statusCounts.missing_in_aws, tone: 'danger' },
@@ -2743,19 +3019,55 @@ function DriftTab({
           </div>
           {selectedItem && (
             <div className="tf-section">
+              {(() => {
+                const isSelectedItemDrifted = selectedItem.status === 'drifted'
+                const navigableService = driftResourceTypeToService(selectedItem.resourceType)
+
+                return (
               <div className="tf-section-head">
                 <h3>Selected Drift Item</h3>
                 <div className="tf-drift-actions">
-                  <button type="button" className="tf-toolbar-btn" onClick={() => onOpenConsole(selectedItem)} disabled={!selectedItem.consoleUrl}>Open In AWS Console</button>
-                  {onNavigateService && driftResourceTypeToService(selectedItem.resourceType) && (
+                  {isSelectedItemDrifted && (
+                    <>
+                      <button
+                        type="button"
+                        className="tf-toolbar-btn"
+                        onClick={() => onPrepareImport(selectedItem)}
+                        disabled={!selectedItem.cloudIdentifier}
+                      >
+                        Prepare Import
+                      </button>
+                      <button
+                        type="button"
+                        className="tf-toolbar-btn"
+                        onClick={() => onPrepareMove(selectedItem)}
+                        disabled={!selectedItem.terraformAddress || !selectedMoveTarget}
+                      >
+                        Prepare Move
+                      </button>
+                      <button
+                        type="button"
+                        className="tf-toolbar-btn danger"
+                        onClick={() => onPrepareRemove(selectedItem)}
+                        disabled={!selectedItem.terraformAddress}
+                      >
+                        Prepare State Remove
+                      </button>
+                      <button type="button" className="tf-toolbar-btn" onClick={() => onOpenConsole(selectedItem)} disabled={!selectedItem.consoleUrl}>Open In AWS Console</button>
+                    </>
+                  )}
+                  {onNavigateService && navigableService && (
                     <button type="button" className="tf-toolbar-btn" onClick={() => {
-                      const svc = driftResourceTypeToService(selectedItem.resourceType)
-                      if (svc) onNavigateService(svc, selectedItem.cloudIdentifier || undefined)
+                      onNavigateService(navigableService, selectedItem.cloudIdentifier || undefined)
                     }}>Open in App</button>
                   )}
-                  <button type="button" className="tf-toolbar-btn" onClick={() => onRunStateShow(selectedItem)} disabled={!selectedItem.terminalCommand}>{cliLabel} state show</button>
+                  {isSelectedItemDrifted && (
+                    <button type="button" className="tf-toolbar-btn" onClick={() => onRunStateShow(selectedItem)} disabled={!selectedItem.terminalCommand}>{cliLabel} state show</button>
+                  )}
                 </div>
               </div>
+                )
+              })()}
               <div className="tf-overview-card-grid">
                 <div className={`tf-overview-card ${selectedItem.status === 'in_sync' ? 'success' : selectedItem.status === 'unsupported' ? 'info' : 'warning'}`}>
                   <span>Status</span>
@@ -2789,6 +3101,85 @@ function DriftTab({
           )}
         </>
       )}
+      {report && snapshotChanges && (
+        <div className="tf-section">
+          <div className="tf-section-head">
+            <div>
+              <h3>Trend Diff</h3>
+              <div className="tf-section-hint">
+                Delta between the latest drift snapshot and the previous scan.
+              </div>
+            </div>
+          </div>
+          <div className="tf-overview-card-grid">
+            <div className="tf-overview-card warning">
+              <span>New Issues</span>
+              <strong>{snapshotChanges.newIssues.length}</strong>
+            </div>
+            <div className="tf-overview-card success">
+              <span>Resolved</span>
+              <strong>{snapshotChanges.resolvedIssues.length}</strong>
+            </div>
+            <div className="tf-overview-card info">
+              <span>Changed</span>
+              <strong>{snapshotChanges.changedItems.length}</strong>
+            </div>
+          </div>
+          <div className="tf-trend-diff-grid">
+            <div className="tf-history-card">
+              <div className="tf-history-card-head">
+                <strong>New Since Last Scan</strong>
+                <span>{formatIsoDate(report.history.latestScanAt)} vs {formatIsoDate(report.history.previousScanAt)}</span>
+              </div>
+              <div className="tf-trend-diff-list">
+                {snapshotChanges.newIssues.length === 0 ? (
+                  <span className="tf-section-hint">No newly introduced actionable drift items.</span>
+                ) : snapshotChanges.newIssues.slice(0, 8).map((item) => (
+                  <div key={`new-${driftSnapshotIdentity(item)}`} className="tf-trend-diff-row">
+                    <code>{item.resourceType}</code>
+                    <span>{item.logicalName || item.terraformAddress}</span>
+                    <strong>{DRIFT_STATUS_LABELS[item.status]}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="tf-history-card">
+              <div className="tf-history-card-head">
+                <strong>Resolved</strong>
+                <span>Items that are no longer actionable drift findings.</span>
+              </div>
+              <div className="tf-trend-diff-list">
+                {snapshotChanges.resolvedIssues.length === 0 ? (
+                  <span className="tf-section-hint">No resolved actionable drift items.</span>
+                ) : snapshotChanges.resolvedIssues.slice(0, 8).map((item) => (
+                  <div key={`resolved-${driftSnapshotIdentity(item)}`} className="tf-trend-diff-row">
+                    <code>{item.resourceType}</code>
+                    <span>{item.logicalName || item.terraformAddress}</span>
+                    <strong>{DRIFT_STATUS_LABELS[item.status]}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="tf-history-card">
+              <div className="tf-history-card-head">
+                <strong>Changed Findings</strong>
+                <span>Status or verified differences changed across scans.</span>
+              </div>
+              <div className="tf-trend-diff-list">
+                {snapshotChanges.changedItems.length === 0 ? (
+                  <span className="tf-section-hint">No changed findings between the last two scans.</span>
+                ) : snapshotChanges.changedItems.slice(0, 8).map(({ latest, previous }) => (
+                  <div key={`changed-${driftSnapshotIdentity(latest)}`} className="tf-trend-diff-row">
+                    <code>{latest.resourceType}</code>
+                    <span>{latest.logicalName || latest.terraformAddress}</span>
+                    <strong>{DRIFT_STATUS_LABELS[previous.status]} {'->'} {DRIFT_STATUS_LABELS[latest.status]}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {report && report.history.snapshots.length > 0 && (
         <div className="tf-section">
           <div className="tf-section-head">
@@ -2799,8 +3190,8 @@ function DriftTab({
               </div>
             </div>
           </div>
-          <div className="tf-history-card-list">
-            {report.history.snapshots.slice(0, 8).map((snapshot, index) => (
+          <div className="tf-history-card-list tf-history-card-list-scroll">
+            {report.history.snapshots.map((snapshot, index) => (
               <div key={snapshot.id} className="tf-history-card">
                 <div className="tf-history-card-head">
                   <strong>{formatIsoDate(snapshot.scannedAt)}</strong>
@@ -3137,7 +3528,7 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
   const [projects, setProjectsList] = useState<TerraformProjectListItem[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [detail, setDetail] = useState<TerraformProject | null>(null)
-  const [detailTab, setDetailTab] = useState<DetailTab>('actions')
+  const [detailTab, setDetailTab] = useState<DetailTab>('operations')
   const [loading, setLoading] = useState(false)
   const [running, setRunning] = useState(false)
   const [msg, setMsg] = useState('')
@@ -3148,6 +3539,7 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
   const [driftStatusFilter, setDriftStatusFilter] = useState<'all' | TerraformDriftStatus>('all')
   const [driftTypeFilter, setDriftTypeFilter] = useState('all')
   const [selectedDriftKey, setSelectedDriftKey] = useState('')
+  const [stateDraft, setStateDraft] = useState<StateOperationDraft | null>(null)
   const [labReport, setLabReport] = useState<ObservabilityPostureReport | null>(null)
   const [labLoading, setLabLoading] = useState(false)
   const [labError, setLabError] = useState('')
@@ -3196,7 +3588,7 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
   const contextKey = terraformContextKey(connection)
   const projectConnection = connectionForProject(connection, detail)
   const persistedSelectedId = uiState.selectedProjectByContext[contextKey] ?? ''
-  const persistedDetailTab = uiState.detailTabByContext[contextKey] ?? 'actions'
+  const persistedDetailTab = uiState.detailTabByContext[contextKey] ?? 'operations'
   const persistedHistoryFilters = detail ? uiState.historyFiltersByProject[detail.id] : undefined
   const persistedDriftStatusFilter = detail ? (uiState.driftStatusFilterByProject[detail.id] ?? 'all') : 'all'
   const persistedDriftTypeFilter = detail ? (uiState.driftTypeFilterByProject[detail.id] ?? 'all') : 'all'
@@ -3876,6 +4268,29 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
     setMsg(`${cliDisplayName(cliInfo)} state command opened in terminal`)
   }
 
+  function handlePrepareDriftImport(item: TerraformDriftItem) {
+    const importAddress = item.relatedTerraformAddresses[0] || item.terraformAddress || ''
+    const importId = item.cloudIdentifier || item.logicalName || ''
+    setStateDraft({ mode: 'import', importAddress, importId })
+    setDetailTab('state')
+    setMsg('Prepared import flow from the selected drift finding.')
+  }
+
+  function handlePrepareDriftMove(item: TerraformDriftItem) {
+    const moveFrom = item.terraformAddress || ''
+    const moveTo = item.relatedTerraformAddresses[0] || ''
+    setStateDraft({ mode: 'move', moveFrom, moveTo })
+    setDetailTab('state')
+    setMsg('Prepared state move flow from the selected drift finding.')
+  }
+
+  function handlePrepareDriftRemove(item: TerraformDriftItem) {
+    const removeAddress = item.terraformAddress || ''
+    setStateDraft({ mode: 'remove', removeAddress })
+    setDetailTab('state')
+    setMsg('Prepared state remove flow from the selected drift finding.')
+  }
+
   function handleLabArtifactRun(artifact: GeneratedArtifact) {
     onRunTerminalCommand?.(artifact.content)
     setMsg(`${cliDisplayName(cliInfo)} artifact opened in terminal`)
@@ -4116,6 +4531,7 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
               </section>
 
               <div className="tf-detail-tabs">
+                <button className={detailTab === 'operations' ? 'active' : ''} onClick={() => setDetailTab('operations')}>Operations</button>
                 <button className={detailTab === 'actions' ? 'active' : ''} onClick={() => setDetailTab('actions')}>Actions</button>
                 <button className={detailTab === 'state' ? 'active' : ''} onClick={() => setDetailTab('state')}>State</button>
                 <button className={detailTab === 'resources' ? 'active' : ''} onClick={() => setDetailTab('resources')}>Resources</button>
@@ -4188,6 +4604,19 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
                 onDeleteWorkspace={() => setShowDeleteWorkspaceDialog(true)}
               />
 
+              {detailTab === 'operations' && (
+                <OperationsCenterTab
+                  project={detail}
+                  driftReport={driftReport}
+                  driftLoading={driftLoading}
+                  driftError={driftError}
+                  lastLog={lastLog}
+                  onOpenActions={() => setDetailTab('actions')}
+                  onOpenDrift={() => setDetailTab('drift')}
+                  onOpenState={() => setDetailTab('state')}
+                  onOpenHistory={() => setDetailTab('history')}
+                />
+              )}
               {detailTab === 'actions' && (
                 <ActionsTab
                   project={detail}
@@ -4212,6 +4641,7 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
                   project={detail}
                   running={running}
                   lastLog={lastLog}
+                  draft={stateDraft}
                   onImport={handleStateImport}
                   onMove={handleStateMove}
                   onRemove={handleStateRemove}
@@ -4233,6 +4663,9 @@ export function TerraformConsole({ connection, refreshNonce = 0, onRunTerminalCo
                   onTypeFilterChange={setDriftTypeFilter}
                   onSelectItem={setSelectedDriftKey}
                   onRefresh={() => void loadDrift({ forceRefresh: true })}
+                  onPrepareImport={handlePrepareDriftImport}
+                  onPrepareMove={handlePrepareDriftMove}
+                  onPrepareRemove={handlePrepareDriftRemove}
                   onOpenConsole={handleOpenDriftConsole}
                   onRunStateShow={handleRunDriftStateShow}
                   onNavigateService={onNavigateService}
