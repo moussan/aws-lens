@@ -27,6 +27,10 @@ export type AwsAssumeRoleTarget = {
   externalId: string
   sourceProfile: string
   defaultRegion: string
+  environment: string
+  criticalAccessLevel: 'low' | 'medium' | 'high' | 'critical'
+  tags: string[]
+  lastUsedAt: string
   createdAt: string
   updatedAt: string
 }
@@ -58,13 +62,17 @@ export type AwsConnection = AwsBaseConnection | AwsAssumedRoleConnection
 
 export type AwsSessionStatus = 'active' | 'expired'
 
+export type AwsSessionExpiryState = 'healthy' | 'expiring' | 'expired'
+
 export type AwsSessionSummary = {
   id: string
   kind: AwsConnection['kind']
   label: string
+  sessionName: string
   profile: string
   region: string
   status: AwsSessionStatus
+  expiryState: AwsSessionExpiryState
   sourceProfile: string
   roleArn: string
   assumedRoleArn: string
@@ -91,6 +99,12 @@ export type ComparisonContextInput =
   | {
       kind: 'assumed-role'
       sessionId: string
+      region: string
+      label?: string
+    }
+  | {
+      kind: 'saved-target'
+      targetId: string
       region: string
       label?: string
     }
@@ -238,6 +252,27 @@ export type ComparisonBaselineInput = {
   description: string
   request: ComparisonRequest
   result: ComparisonResult
+}
+
+export type ComparisonPresetSummary = {
+  id: string
+  name: string
+  description: string
+  createdAt: string
+  updatedAt: string
+  leftLabel: string
+  rightLabel: string
+}
+
+export type ComparisonPreset = ComparisonPresetSummary & {
+  request: ComparisonRequest
+}
+
+export type ComparisonPresetInput = {
+  id?: string
+  name: string
+  description: string
+  request: ComparisonRequest
 }
 
 export type AssumeRoleRequest = {
@@ -1881,11 +1916,40 @@ export type OverviewAccountContext = {
   caller: CallerIdentity
   billingHomeRegion: string
   payerVisibility: 'payer-or-management' | 'member-or-standalone' | 'unavailable'
+  payerAccountId: string
+  payerAccountLabel: string
   linkedAccounts: BillingLinkedAccountSummary[]
   ownershipHints: BillingTagOwnershipHint[]
+  organization: OverviewOrganizationContext | null
   capabilitySnapshot: AwsCapabilitySnapshot
   notes: string[]
   generatedAt: string
+}
+
+export type OverviewOrganizationNodeType = 'root' | 'organizational-unit' | 'account'
+
+export type OverviewOrganizationNode = {
+  id: string
+  parentId: string
+  type: OverviewOrganizationNodeType
+  name: string
+  arn: string
+  accountId: string
+  email: string
+}
+
+export type OverviewOrganizationContext = {
+  status: 'available' | 'limited' | 'unavailable'
+  organizationId: string
+  organizationArn: string
+  managementAccountId: string
+  managementAccountName: string
+  rootId: string
+  rootName: string
+  currentAccountId: string
+  currentAccountPath: string[]
+  nodes: OverviewOrganizationNode[]
+  warning: string
 }
 
 export type ServiceRelationship = {

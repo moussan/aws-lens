@@ -2,7 +2,11 @@
 
 # AWS Lens
 
-A desktop AWS operator workspace built on Electron, React, and TypeScript. AWS Lens combines a profile-aware navigation shell, service-specific operational consoles, Terraform infrastructure management, governance checks, session switching, direct resource access, and an embedded terminal in one desktop UI.
+> The missing control plane for AWS + Terraform operations.
+
+AWS Lens is a desktop workspace that brings AWS infrastructure, Terraform workflows, and operational tooling into a single interface.
+
+---
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-35-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
@@ -17,7 +21,41 @@ A desktop AWS operator workspace built on Electron, React, and TypeScript. AWS L
 </div>
 
 ---
+## 🚨 The Problem
 
+Managing AWS + Terraform is fragmented:
+
+- AWS Console → slow and scattered  
+- Terraform CLI → powerful but blind  
+- No single place to **see + operate + debug**  
+
+You constantly switch between:
+- AWS Console  
+- Terraform  
+- Terminal
+
+---
+
+## ⚡ The Solution
+
+AWS Lens combines everything into one workspace:
+
+- 🧭 Explore AWS resources visually  
+- 🌍 Manage Terraform projects and state  
+- 🔍 Detect drift and governance issues  
+- 💻 Run commands with full AWS context  
+
+---
+
+## 🎯 What makes it different?
+
+This is NOT:
+- another AWS dashboard  
+- another Terraform wrapper  
+
+👉 It’s an **operator cockpit**
+
+---
 ## Interface Tour
 
 The current UI is organized around a left-rail workspace shell instead of a single-service dashboard. Operators select a profile and region once, then move across overview, Terraform, direct resource access, session workflows, and service-specific consoles without losing context.

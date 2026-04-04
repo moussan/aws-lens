@@ -355,6 +355,7 @@ textarea {
 }
 
 .active-chip,
+.warning-chip,
 .inactive-chip {
   padding: 0.45rem 0.7rem;
   border-radius: 999px;
@@ -364,6 +365,12 @@ textarea {
   background: linear-gradient(135deg, #c45a1e, #f58540);
   color: #1a0e06;
   border-color: transparent;
+}
+
+.warning-chip {
+  background: linear-gradient(135deg, rgba(245, 154, 61, 0.24), rgba(240, 193, 94, 0.2));
+  color: #f8d19e;
+  border: 1px solid rgba(245, 154, 61, 0.28);
 }
 
 .inactive-chip {
@@ -610,6 +617,60 @@ textarea {
 
 .overview-note-list {
   margin-top: 0.75rem;
+}
+
+.overview-org-card {
+  min-width: 0;
+}
+
+.overview-org-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+}
+
+.overview-org-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 34px;
+  padding: 0.45rem 0.65rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.overview-org-row.active {
+  border-color: rgba(223, 105, 42, 0.28);
+  background: rgba(223, 105, 42, 0.08);
+}
+
+.overview-org-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.overview-org-type-root {
+  color: #ffd392;
+}
+
+.overview-org-type-organizational-unit {
+  color: #9ec5ff;
+}
+
+.overview-org-type-account {
+  color: #8fe1bf;
 }
 
 .overview-note-item {
@@ -1608,6 +1669,28 @@ button.overview-tile.clickable.active strong {
   font-family: "Space Grotesk", "Segoe UI", sans-serif;
 }
 
+.session-hub-refresh-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.95rem 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(245, 154, 61, 0.24);
+  background:
+    linear-gradient(135deg, rgba(245, 154, 61, 0.14), rgba(240, 193, 94, 0.08)),
+    rgba(10, 15, 22, 0.94);
+}
+
+.session-hub-refresh-banner strong {
+  color: #f8d19e;
+}
+
+.session-hub-refresh-banner p {
+  margin: 0.25rem 0 0;
+  color: #c8d6e4;
+}
+
 .session-hub-toolbar-btn {
   padding: 0.72rem 1rem;
   border: 1px solid rgba(145, 176, 207, 0.12);
@@ -1675,6 +1758,14 @@ button.overview-tile.clickable.active strong {
   gap: 0.9rem;
 }
 
+.session-hub-target-form-span {
+  grid-column: 1 / -1;
+}
+
+.session-hub-compare-description {
+  grid-column: 1 / -1;
+}
+
 .session-hub-picker {
   position: relative;
 }
@@ -1738,6 +1829,84 @@ button.overview-tile.clickable.active strong {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+.session-hub-target-meta,
+.session-hub-target-tags,
+.session-hub-target-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.session-hub-target-meta,
+.session-hub-target-tags {
+  margin-top: 0.65rem;
+}
+
+.session-hub-target-summary {
+  margin-top: 0.65rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  justify-content: space-between;
+}
+
+.session-hub-target-pill,
+.session-hub-target-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(145, 176, 207, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(238, 240, 244, 0.86);
+  font-size: 0.76rem;
+}
+
+.session-hub-target-tag {
+  color: #aecdff;
+}
+
+.session-hub-target-pill.critical-low {
+  color: #b9d7ff;
+}
+
+.session-hub-target-pill.critical-medium {
+  color: #ffd392;
+  border-color: rgba(245, 154, 61, 0.18);
+  background: rgba(245, 154, 61, 0.08);
+}
+
+.session-hub-target-pill.critical-high {
+  color: #ffbf9e;
+  border-color: rgba(223, 105, 42, 0.22);
+  background: rgba(223, 105, 42, 0.1);
+}
+
+.session-hub-target-pill.critical-critical {
+  color: #ffd7d2;
+  border-color: rgba(224, 82, 82, 0.26);
+  background: rgba(224, 82, 82, 0.12);
+}
+
+.session-hub-command-card {
+  min-width: 0;
+}
+
+.session-hub-command-preview {
+  display: block;
+  margin-top: 0.6rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  background: rgba(6, 10, 16, 0.84);
+  border: 1px solid rgba(145, 176, 207, 0.1);
+  color: #cfe0f5;
+  font-family: "IBM Plex Mono", "Consolas", monospace;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .session-hub-session-table {
@@ -3342,9 +3511,12 @@ button.overview-tile.clickable.active strong {
     flex-direction: column;
   }
 
+  .session-hub-refresh-banner,
   .session-hub-shell-status {
     width: 100%;
     justify-content: stretch;
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .session-hub-shell-status .freshness-indicator,

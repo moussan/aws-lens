@@ -4,6 +4,7 @@ import type {
   AwsCapabilitySubject,
   AppSettings,
   ComparisonBaselineInput,
+  ComparisonPresetInput,
   ComparisonRequest,
   AssumeRoleRequest,
   AwsAssumeRoleTarget,
@@ -50,6 +51,7 @@ declare global {
       deleteAssumeRoleTarget: (targetId: string) => Promise<unknown>
       deleteAssumedSession: (sessionId: string) => Promise<unknown>
       assumeRoleSession: (request: AssumeRoleRequest) => Promise<unknown>
+      refreshAssumedSession: (sessionId: string) => Promise<unknown>
       assumeSavedRoleTarget: (targetId: string) => Promise<unknown>
       listServices: () => Promise<unknown>
       getGovernanceTagDefaults: () => Promise<unknown>
@@ -78,9 +80,13 @@ declare global {
       revealVaultEntrySecret: (entryId: string) => Promise<unknown>
       recordVaultEntryUse: (input: VaultEntryUsageInput) => Promise<unknown>
       listComparisonBaselines: () => Promise<unknown>
+      listComparisonPresets: () => Promise<unknown>
       getComparisonBaseline: (baselineId: string) => Promise<unknown>
+      getComparisonPreset: (presetId: string) => Promise<unknown>
       saveComparisonBaseline: (input: ComparisonBaselineInput) => Promise<unknown>
+      saveComparisonPreset: (input: ComparisonPresetInput) => Promise<unknown>
       deleteComparisonBaseline: (baselineId: string) => Promise<unknown>
+      deleteComparisonPreset: (presetId: string) => Promise<unknown>
       buildEksUpgradePlan: (connection: AwsConnection, request: EksUpgradePlannerRequest) => Promise<unknown>
       resolveDirectAccessInput: (input: string) => Promise<unknown>
       getReleaseInfo: () => Promise<unknown>
