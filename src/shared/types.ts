@@ -27,6 +27,10 @@ export type AwsAssumeRoleTarget = {
   externalId: string
   sourceProfile: string
   defaultRegion: string
+  environment: string
+  criticalAccessLevel: 'low' | 'medium' | 'high' | 'critical'
+  tags: string[]
+  lastUsedAt: string
   createdAt: string
   updatedAt: string
 }

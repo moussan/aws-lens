@@ -99,12 +99,52 @@ function emptyDraft(profile: string, region: string): Omit<AwsAssumeRoleTarget, 
     defaultSessionName: 'aws-lens',
     externalId: '',
     sourceProfile: profile,
-    defaultRegion: region
+    defaultRegion: region,
+    environment: '',
+    criticalAccessLevel: 'low',
+    tags: [],
+    lastUsedAt: ''
   }
 }
 
 function formatDateTime(value: string): string {
   return value ? new Date(value).toLocaleString() : '-'
+}
+
+function formatRelativeTime(value: string): string {
+  if (!value) {
+    return 'Never used'
+  }
+
+  const time = new Date(value).getTime()
+  if (!Number.isFinite(time)) {
+    return 'Never used'
+  }
+
+  const elapsedMs = Date.now() - time
+  if (elapsedMs < 60_000) {
+    return 'Used just now'
+  }
+  if (elapsedMs < 3_600_000) {
+    return `Used ${Math.floor(elapsedMs / 60_000)}m ago`
+  }
+  if (elapsedMs < 86_400_000) {
+    return `Used ${Math.floor(elapsedMs / 3_600_000)}h ago`
+  }
+
+  return `Used ${Math.floor(elapsedMs / 86_400_000)}d ago`
+}
+
+function formatTagInput(value: string): string[] {
+  return [...new Set(value.split(',').map((tag) => tag.trim()).filter(Boolean))].slice(0, 8)
+}
+
+function getCriticalityClassName(level: AwsAssumeRoleTarget['criticalAccessLevel']): string {
+  return `session-hub-target-pill critical-${level}`
+}
+
+function getEnvironmentLabel(value: string): string {
+  return value.trim() || 'Unspecified env'
 }
 
 function formatCountdown(expiration: string): string {
@@ -675,7 +715,11 @@ export function SessionHub({
       defaultSessionName: target.defaultSessionName,
       externalId: target.externalId,
       sourceProfile: target.sourceProfile,
-      defaultRegion: target.defaultRegion
+      defaultRegion: target.defaultRegion,
+      environment: target.environment,
+      criticalAccessLevel: target.criticalAccessLevel,
+      tags: target.tags,
+      lastUsedAt: target.lastUsedAt
     })
   }
 
@@ -872,6 +916,36 @@ export function SessionHub({
                 }}
               />
               <label className="field"><span>Default Region</span><input value={draft.defaultRegion} onChange={(event) => updateDraft('defaultRegion', event.target.value)} /></label>
+              <label className="field">
+                <span>Environment</span>
+                <input
+                  value={draft.environment}
+                  onChange={(event) => updateDraft('environment', event.target.value)}
+                  placeholder="prod, staging, shared"
+                />
+              </label>
+              <label className="field">
+                <span>Critical Access</span>
+                <select
+                  value={draft.criticalAccessLevel}
+                  onChange={(event) =>
+                    updateDraft('criticalAccessLevel', event.target.value as AwsAssumeRoleTarget['criticalAccessLevel'])
+                  }
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </label>
+              <label className="field session-hub-target-form-span">
+                <span>Tags</span>
+                <input
+                  value={draft.tags.join(', ')}
+                  onChange={(event) => updateDraft('tags', formatTagInput(event.target.value))}
+                  placeholder="team:platform, ecr, prod"
+                />
+              </label>
             </div>
             <div className="button-row session-hub-toolbar">
               <button type="button" className="accent" disabled={busyId === 'save-target'} onClick={() => void handleSaveTarget()}>
@@ -925,9 +999,27 @@ export function SessionHub({
                       <div>
                         <strong>{target.label}</strong>
                         <div className="hero-path">{target.roleArn}</div>
+                        <div className="session-hub-target-meta">
+                          <span className="session-hub-target-pill">{getEnvironmentLabel(target.environment)}</span>
+                          <span className={getCriticalityClassName(target.criticalAccessLevel)}>{target.criticalAccessLevel}</span>
+                          <span className="session-hub-target-pill">{target.sourceProfile || '-'}</span>
+                          <span className="session-hub-target-pill">{target.defaultRegion || '-'}</span>
+                        </div>
+                        {target.tags.length > 0 && (
+                          <div className="session-hub-target-tags">
+                            {target.tags.map((tag) => (
+                              <span key={tag} className="session-hub-target-tag">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="session-hub-target-summary">
+                          <span>Session: {target.defaultSessionName}</span>
+                          <span>{formatRelativeTime(target.lastUsedAt)}</span>
+                        </div>
                       </div>
                     </div>
-                    <div className="hero-path">Profile: {target.sourceProfile || '-'} · Region: {target.defaultRegion || '-'}</div>
                     <div className="button-row session-hub-toolbar">
                       <button type="button" className="accent" disabled={busyId === target.id} onClick={() => void handleAssumeTarget(target)}>Assume</button>
                       <button type="button" onClick={() => loadTargetIntoForm(target)}>Edit</button>
