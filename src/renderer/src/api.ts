@@ -7,6 +7,9 @@ import type {
   ComparisonBaseline,
   ComparisonBaselineInput,
   ComparisonBaselineSummary,
+  ComparisonPreset,
+  ComparisonPresetInput,
+  ComparisonPresetSummary,
   ComparisonRequest,
   ComparisonResult,
   AccessKeyOwnership,
@@ -289,9 +292,13 @@ const CACHE_TAG_BY_METHOD: Partial<Record<keyof AwsLensBridge, CacheTag>> = {
   deleteVaultEntry: 'phase2-foundations',
   recordVaultEntryUse: 'phase2-foundations',
   listComparisonBaselines: 'phase2-foundations',
+  listComparisonPresets: 'phase2-foundations',
   getComparisonBaseline: 'phase2-foundations',
+  getComparisonPreset: 'phase2-foundations',
   saveComparisonBaseline: 'phase2-foundations',
+  saveComparisonPreset: 'phase2-foundations',
   deleteComparisonBaseline: 'phase2-foundations',
+  deleteComparisonPreset: 'phase2-foundations',
   buildEksUpgradePlan: 'phase2-foundations',
   resolveDirectAccessInput: 'phase2-foundations',
   listProfiles: 'shell',
@@ -439,7 +446,9 @@ const MUTATING_METHODS = new Set<keyof AwsLensBridge>([
   'recordVaultEntryUse',
   'chooseEc2SshKey',
   'saveComparisonBaseline',
+  'saveComparisonPreset',
   'deleteComparisonBaseline',
+  'deleteComparisonPreset',
   'deleteProfile',
   'chooseAndImportConfig',
   'saveCredentials',
@@ -726,12 +735,82 @@ export function trackedAwsBridge(): AwsLensBridge {
   return awsBridge()
 }
 
-function normalizeUserFacingError(rawError: string): AwsLensApiError {
+function normalizeUserFacingError(rawError: string, operationLabel?: string): AwsLensApiError {
   const normalized = rawError.toLowerCase()
+  const requestDetail = operationLabel ? ` Request: ${operationLabel}.` : ''
+  const isAssumeRoleRequest =
+    normalized.includes('assumerole') ||
+    normalized.includes('sts:assumerole') ||
+    operationLabel?.toLowerCase().includes('assume role') === true
+
+  if (isAssumeRoleRequest) {
+    const principalMatch = rawError.match(/(?:user|arn):\s*(arn:aws:[^\s,]+)/i) ?? rawError.match(/(arn:aws:[^\s,]+)/i)
+    const resourceMatch = rawError.match(/on resource:\s*(arn:aws:[^\s,]+)/i)
+    const principalDetail = principalMatch ? ` Active principal: ${principalMatch[1]}.` : ''
+    const roleDetail = resourceMatch ? ` Target role: ${resourceMatch[1]}.` : ''
+
+    if (
+      normalized.includes('externalid') ||
+      normalized.includes('external id') ||
+      normalized.includes('sts:externalid')
+    ) {
+      return new AwsLensApiError(
+        `AWS rejected the assume-role request because the external ID requirement did not match.${requestDetail}${roleDetail} Verify the saved target external ID and the role trust policy condition.`,
+        rawError,
+        'External ID Mismatch'
+      )
+    }
+
+    if (
+      normalized.includes('multi-factor authentication') ||
+      normalized.includes('mfa') ||
+      normalized.includes('serialnumber')
+    ) {
+      return new AwsLensApiError(
+        `AWS rejected the assume-role request because MFA is required for this role.${requestDetail}${roleDetail} Use a source principal with MFA satisfied, or update the trust policy requirements.`,
+        rawError,
+        'MFA Required'
+      )
+    }
+
+    if (
+      normalized.includes('nosuchentity') ||
+      normalized.includes('cannot be found') ||
+      normalized.includes('not found') ||
+      normalized.includes('invalid role')
+    ) {
+      return new AwsLensApiError(
+        `AWS could not find the target role for this assume-role request.${requestDetail}${roleDetail} Confirm the role ARN, account ID, and role name.`,
+        rawError,
+        'Role Not Found'
+      )
+    }
+
+    if (
+      normalized.includes('validationerror') ||
+      normalized.includes('validation error') ||
+      normalized.includes('member must satisfy') ||
+      normalized.includes('failed to satisfy constraint')
+    ) {
+      return new AwsLensApiError(
+        `The assume-role request is malformed.${requestDetail}${roleDetail} Check the role ARN, session name, and optional external ID format.`,
+        rawError,
+        'Invalid AssumeRole Request'
+      )
+    }
+
+    if (normalized.includes('accessdenied') || normalized.includes('access denied') || normalized.includes('not authorized')) {
+      return new AwsLensApiError(
+        `AWS denied the assume-role request.${requestDetail}${principalDetail}${roleDetail} Confirm that the active principal has \`sts:AssumeRole\` permission and that the target role trust policy allows this principal.`,
+        rawError,
+        'AssumeRole Access Denied'
+      )
+    }
+  }
 
   if (normalized.includes('read-only mode')) {
     return new AwsLensApiError(
-      'This action is blocked in read-only mode. Switch to operator mode to make changes.',
+      `This action is blocked in read-only mode.${requestDetail} Switch to operator mode to make changes.`,
       rawError,
       'Read-Only Mode'
     )
@@ -739,7 +818,7 @@ function normalizeUserFacingError(rawError: string): AwsLensApiError {
 
   if (normalized.includes('accessdenied') || normalized.includes('access denied') || normalized.includes('not authorized')) {
     return new AwsLensApiError(
-      'AWS denied this request. Check the active IAM role or policy scope for the selected account and region.',
+      `AWS denied this request.${requestDetail} Check the active IAM role or policy scope for the selected account and region.`,
       rawError,
       'Access Denied'
     )
@@ -747,7 +826,7 @@ function normalizeUserFacingError(rawError: string): AwsLensApiError {
 
   if (normalized.includes('expired token') || normalized.includes('expiredtoken') || normalized.includes('security token')) {
     return new AwsLensApiError(
-      'The current AWS session has expired. Refresh credentials or assume the role again, then retry.',
+      `The current AWS session has expired.${requestDetail} Refresh credentials or assume the role again, then retry.`,
       rawError,
       'Session Expired'
     )
@@ -755,7 +834,7 @@ function normalizeUserFacingError(rawError: string): AwsLensApiError {
 
   if (normalized.includes('throttl') || normalized.includes('rate exceeded') || normalized.includes('too many requests')) {
     return new AwsLensApiError(
-      'AWS is rate-limiting this operation. Retry in a moment or narrow the request scope.',
+      `AWS is rate-limiting this operation.${requestDetail} Retry in a moment or narrow the request scope.`,
       rawError,
       'Request Throttled'
     )
@@ -763,7 +842,7 @@ function normalizeUserFacingError(rawError: string): AwsLensApiError {
 
   if (normalized.includes('timed out') || normalized.includes('timeout')) {
     return new AwsLensApiError(
-      'The operation timed out before AWS or the local tool completed. Retry or reduce the amount of data being requested.',
+      `The operation timed out before AWS or the local tool completed.${requestDetail} Retry or reduce the amount of data being requested.`,
       rawError,
       'Operation Timed Out'
     )
@@ -802,17 +881,17 @@ function normalizeUserFacingError(rawError: string): AwsLensApiError {
   }
 
   return new AwsLensApiError(
-    'The operation failed. Review the current context and export diagnostics if the problem persists.',
+    `The operation failed.${requestDetail} Review the current context and export diagnostics if the problem persists.`,
     rawError
   )
 }
 
-function unwrap<T>(result: Wrapped<T>): T {
+function unwrap<T>(result: Wrapped<T>, operationLabel?: string): T {
   if (!result.ok) {
     if (typeof window !== 'undefined' && result.error.includes('read-only mode')) {
       window.dispatchEvent(new CustomEvent('aws-lens:blocked-action', { detail: result.error }))
     }
-    throw normalizeUserFacingError(result.error)
+    throw normalizeUserFacingError(result.error, operationLabel)
   }
   return result.data
 }
@@ -908,11 +987,24 @@ export async function deleteAssumedSession(sessionId: string): Promise<void> {
 }
 
 export async function assumeRoleSession(request: AssumeRoleRequest): Promise<AssumeRoleResult> {
-  return unwrap((await awsBridge().assumeRoleSession(request)) as Wrapped<AssumeRoleResult>)
+  return unwrap(
+    (await awsBridge().assumeRoleSession(request)) as Wrapped<AssumeRoleResult>,
+    'Assume role with STS'
+  )
+}
+
+export async function refreshAssumedSession(sessionId: string): Promise<AssumeRoleResult> {
+  return unwrap(
+    (await awsBridge().refreshAssumedSession(sessionId)) as Wrapped<AssumeRoleResult>,
+    'Refresh assumed-role session with STS'
+  )
 }
 
 export async function assumeSavedRoleTarget(targetId: string): Promise<AssumeRoleResult> {
-  return unwrap((await awsBridge().assumeSavedRoleTarget(targetId)) as Wrapped<AssumeRoleResult>)
+  return unwrap(
+    (await awsBridge().assumeSavedRoleTarget(targetId)) as Wrapped<AssumeRoleResult>,
+    'Assume saved role target with STS'
+  )
 }
 
 export async function listServices(): Promise<ServiceDescriptor[]> {
@@ -1026,16 +1118,32 @@ export async function listComparisonBaselines(): Promise<ComparisonBaselineSumma
   return unwrap((await awsBridge().listComparisonBaselines()) as Wrapped<ComparisonBaselineSummary[]>)
 }
 
+export async function listComparisonPresets(): Promise<ComparisonPresetSummary[]> {
+  return unwrap((await awsBridge().listComparisonPresets()) as Wrapped<ComparisonPresetSummary[]>)
+}
+
 export async function getComparisonBaseline(baselineId: string): Promise<ComparisonBaseline | null> {
   return unwrap((await awsBridge().getComparisonBaseline(baselineId)) as Wrapped<ComparisonBaseline | null>)
+}
+
+export async function getComparisonPreset(presetId: string): Promise<ComparisonPreset | null> {
+  return unwrap((await awsBridge().getComparisonPreset(presetId)) as Wrapped<ComparisonPreset | null>)
 }
 
 export async function saveComparisonBaseline(input: ComparisonBaselineInput): Promise<ComparisonBaselineSummary> {
   return unwrap((await awsBridge().saveComparisonBaseline(input)) as Wrapped<ComparisonBaselineSummary>)
 }
 
+export async function saveComparisonPreset(input: ComparisonPresetInput): Promise<ComparisonPresetSummary> {
+  return unwrap((await awsBridge().saveComparisonPreset(input)) as Wrapped<ComparisonPresetSummary>)
+}
+
 export async function deleteComparisonBaseline(baselineId: string): Promise<void> {
   return unwrap((await awsBridge().deleteComparisonBaseline(baselineId)) as Wrapped<void>)
+}
+
+export async function deleteComparisonPreset(presetId: string): Promise<void> {
+  return unwrap((await awsBridge().deleteComparisonPreset(presetId)) as Wrapped<void>)
 }
 
 export async function buildEksUpgradePlan(
@@ -1866,7 +1974,10 @@ export async function lookupAccessKeyOwnership(connection: AwsConnection, access
 }
 
 export async function assumeRole(connection: AwsConnection, roleArn: string, sessionName: string, externalId?: string): Promise<AssumeRoleResult> {
-  return unwrap((await awsBridge().assumeRole(connection, roleArn, sessionName, externalId)) as Wrapped<AssumeRoleResult>)
+  return unwrap(
+    (await awsBridge().assumeRole(connection, roleArn, sessionName, externalId)) as Wrapped<AssumeRoleResult>,
+    'Assume role with STS'
+  )
 }
 
 export async function listKmsKeys(connection: AwsConnection): Promise<KmsKeySummary[]> {
@@ -2051,7 +2162,9 @@ export async function simulateSsoPermissions(c: AwsConnection, instanceArn: stri
 
 export async function listIamUsers(c: AwsConnection): Promise<IamUserSummary[]> { return unwrap((await awsBridge().listIamUsers(c)) as Wrapped<IamUserSummary[]>) }
 export async function listIamGroups(c: AwsConnection): Promise<IamGroupSummary[]> { return unwrap((await awsBridge().listIamGroups(c)) as Wrapped<IamGroupSummary[]>) }
-export async function listIamRoles(c: AwsConnection): Promise<IamRoleSummary[]> { return unwrap((await awsBridge().listIamRoles(c)) as Wrapped<IamRoleSummary[]>) }
+export async function listIamRoles(c: AwsConnection): Promise<IamRoleSummary[]> {
+  return unwrap((await awsBridge().listIamRoles(c)) as Wrapped<IamRoleSummary[]>, 'List IAM roles for Role ARN suggestions')
+}
 export async function listIamPolicies(c: AwsConnection, scope: string): Promise<IamPolicySummary[]> { return unwrap((await awsBridge().listIamPolicies(c, scope)) as Wrapped<IamPolicySummary[]>) }
 export async function getIamAccountSummary(c: AwsConnection): Promise<IamAccountSummary> { return unwrap((await awsBridge().getIamAccountSummary(c)) as Wrapped<IamAccountSummary>) }
 export async function listIamAccessKeys(c: AwsConnection, u: string): Promise<IamAccessKeySummary[]> { return unwrap((await awsBridge().listIamAccessKeys(c, u)) as Wrapped<IamAccessKeySummary[]>) }

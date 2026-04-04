@@ -1,12 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import type { AssumeRoleRequest, AwsAssumeRoleTarget, AwsConnection, AwsSessionSummary, ComparisonRequest, IamRoleSummary } from '@shared/types'
+import type {
+  AssumeRoleRequest,
+  AwsAssumeRoleTarget,
+  AwsConnection,
+  AwsSessionSummary,
+  ComparisonPreset,
+  ComparisonPresetSummary,
+  ComparisonRequest,
+  IamRoleSummary
+} from '@shared/types'
 import {
   assumeRoleSession,
   assumeSavedRoleTarget,
   deleteAssumedSession,
   deleteAssumeRoleTarget,
+  deleteComparisonPreset,
+  getComparisonPreset,
   listIamRoles,
+  listComparisonPresets,
+  refreshAssumedSession,
+  saveComparisonPreset,
   saveAssumeRoleTarget
 } from './api'
 import { CollapsibleInfoPanel } from './CollapsibleInfoPanel'
@@ -85,12 +99,56 @@ function emptyDraft(profile: string, region: string): Omit<AwsAssumeRoleTarget, 
     defaultSessionName: 'aws-lens',
     externalId: '',
     sourceProfile: profile,
-    defaultRegion: region
+    defaultRegion: region,
+    environment: '',
+    criticalAccessLevel: 'low',
+    tags: [],
+    lastUsedAt: ''
   }
 }
 
 function formatDateTime(value: string): string {
   return value ? new Date(value).toLocaleString() : '-'
+}
+
+function formatRelativeTime(value: string): string {
+  if (!value) {
+    return 'Never used'
+  }
+
+  const time = new Date(value).getTime()
+  if (!Number.isFinite(time)) {
+    return 'Never used'
+  }
+
+  const elapsedMs = Date.now() - time
+  if (elapsedMs < 60_000) {
+    return 'Used just now'
+  }
+  if (elapsedMs < 3_600_000) {
+    return `Used ${Math.floor(elapsedMs / 60_000)}m ago`
+  }
+  if (elapsedMs < 86_400_000) {
+    return `Used ${Math.floor(elapsedMs / 3_600_000)}h ago`
+  }
+
+  return `Used ${Math.floor(elapsedMs / 86_400_000)}d ago`
+}
+
+function formatTagInput(value: string): string[] {
+  return [...new Set(value.split(',').map((tag) => tag.trim()).filter(Boolean))].slice(0, 8)
+}
+
+function getCriticalityClassName(level: AwsAssumeRoleTarget['criticalAccessLevel']): string {
+  return `session-hub-target-pill critical-${level}`
+}
+
+function getEnvironmentLabel(value: string): string {
+  return value.trim() || 'Unspecified env'
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
 }
 
 function formatCountdown(expiration: string): string {
@@ -107,6 +165,30 @@ function formatCountdown(expiration: string): string {
   const minutes = Math.floor((totalSeconds % 3600) / 60)
   const seconds = totalSeconds % 60
   return `${hours}h ${minutes}m ${seconds}s`
+}
+
+function getExpiryLabel(session: AwsSessionSummary): string {
+  if (session.expiryState === 'expired') {
+    return 'expired'
+  }
+
+  if (session.expiryState === 'expiring') {
+    return 'expiring soon'
+  }
+
+  return session.status
+}
+
+function getSessionStatusClassName(session: AwsSessionSummary): string {
+  if (session.expiryState === 'expired') {
+    return 'inactive-chip'
+  }
+
+  if (session.expiryState === 'expiring') {
+    return 'warning-chip'
+  }
+
+  return 'active-chip'
 }
 
 function buildSessionConnection(session: AwsSessionSummary): AwsConnection {
@@ -129,11 +211,13 @@ function buildSessionConnection(session: AwsSessionSummary): AwsConnection {
 export function SessionHub({
   connectionState,
   onOpenCompare,
-  onOpenTerminal
+  onOpenTerminal,
+  onRunTerminalCommand
 }: {
   connectionState: ConnectionState
   onOpenCompare: (request: ComparisonRequest) => void
   onOpenTerminal: (connection: AwsConnection) => void
+  onRunTerminalCommand: (command: string) => void
 }) {
   const [draft, setDraft] = useState<Omit<AwsAssumeRoleTarget, 'id' | 'createdAt' | 'updatedAt'>>(
     emptyDraft(connectionState.selectedProfile?.name ?? connectionState.profile, connectionState.region)
@@ -149,6 +233,13 @@ export function SessionHub({
   const [rolesLoading, setRolesLoading] = useState(false)
   const [roleArnPickerOpen, setRoleArnPickerOpen] = useState(false)
   const [sourceProfilePickerOpen, setSourceProfilePickerOpen] = useState(false)
+  const [comparePresets, setComparePresets] = useState<ComparisonPresetSummary[]>([])
+  const [selectedComparePresetId, setSelectedComparePresetId] = useState('')
+  const [loadedComparePreset, setLoadedComparePreset] = useState<ComparisonPreset | null>(null)
+  const [comparePresetName, setComparePresetName] = useState('')
+  const [comparePresetDescription, setComparePresetDescription] = useState('')
+  const [comparePresetBusy, setComparePresetBusy] = useState('')
+  const [comparePresetMessage, setComparePresetMessage] = useState('')
   const {
     freshness,
     beginRefresh,
@@ -204,6 +295,7 @@ export function SessionHub({
       requestBase:
         | { kind: 'profile'; profile: string; label?: string }
         | { kind: 'assumed-role'; sessionId: string; label?: string }
+        | { kind: 'saved-target'; targetId: string; label?: string }
     }> = []
 
     for (const profile of connectionState.profiles) {
@@ -214,6 +306,18 @@ export function SessionHub({
           kind: 'profile',
           profile: profile.name,
           label: profile.name
+        }
+      })
+    }
+
+    for (const target of connectionState.targets) {
+      options.push({
+        id: `target:${target.id}`,
+        label: `Saved target: ${target.label} (${target.sourceProfile})`,
+        requestBase: {
+          kind: 'saved-target',
+          targetId: target.id,
+          label: target.label
         }
       })
     }
@@ -231,7 +335,7 @@ export function SessionHub({
     }
 
     return options
-  }, [connectionState.profiles, connectionState.sessions])
+  }, [connectionState.profiles, connectionState.sessions, connectionState.targets])
 
   useEffect(() => {
     const sourceProfile = draft.sourceProfile.trim()
@@ -251,7 +355,10 @@ export function SessionHub({
     setRolesLoading(true)
     void listIamRoles(connection)
       .then((roles) => setAvailableRoles(roles))
-      .catch(() => setAvailableRoles([]))
+      .catch((err) => {
+        setAvailableRoles([])
+        setError(err instanceof Error ? err.message : String(err))
+      })
       .finally(() => setRolesLoading(false))
   }, [connectionState.region, draft.defaultRegion, draft.sourceProfile])
 
@@ -283,6 +390,10 @@ export function SessionHub({
       setCompareRight(compareOptions[1].id)
     }
   }, [compareLeft, compareOptions, compareRight])
+
+  useEffect(() => {
+    void refreshComparePresets()
+  }, [])
 
   function updateDraft<K extends keyof typeof draft>(key: K, value: (typeof draft)[K]): void {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -366,6 +477,70 @@ export function SessionHub({
     }
   }
 
+  async function handleRefreshSession(sessionId: string, options?: { activateOnSuccess?: boolean }): Promise<void> {
+    setError('')
+    setMessage('')
+    setBusyId(sessionId)
+
+    try {
+      const result = await refreshAssumedSession(sessionId)
+      await refreshSessionHub()
+
+      if (options?.activateOnSuccess) {
+        connectionState.activateSession(result.sessionId)
+      }
+
+      setMessage(`Refreshed ${result.label}. A new temporary session is now available.`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId('')
+    }
+  }
+
+  async function handleRefreshExpiringSessions(): Promise<void> {
+    const expiringSessions = connectionState.sessions.filter((session) => session.expiryState === 'expiring')
+    if (expiringSessions.length === 0) {
+      return
+    }
+
+    setError('')
+    setMessage('')
+    setBusyId('refresh-expiring')
+
+    const activeExpiringSession = connectionState.activeSession
+      ? expiringSessions.find((session) => session.id === connectionState.activeSession?.id) ?? null
+      : null
+
+    try {
+      let refreshedCount = 0
+      let activatedSessionId = ''
+
+      for (const session of expiringSessions) {
+        const result = await refreshAssumedSession(session.id)
+        refreshedCount += 1
+        if (activeExpiringSession?.id === session.id) {
+          activatedSessionId = result.sessionId
+        }
+      }
+
+      await refreshSessionHub()
+      if (activatedSessionId) {
+        connectionState.activateSession(activatedSessionId)
+      }
+
+      setMessage(
+        refreshedCount === 1
+          ? 'Refreshed 1 expiring session.'
+          : `Refreshed ${refreshedCount} expiring sessions.`
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusyId('')
+    }
+  }
+
   async function handleDeleteTarget(targetId: string): Promise<void> {
     setError('')
     setMessage('')
@@ -403,18 +578,139 @@ export function SessionHub({
     }
   }
 
-  function handleCompareLaunch(): void {
+  function buildCompareRequest(): ComparisonRequest | null {
     const left = compareOptions.find((entry) => entry.id === compareLeft)
     const right = compareOptions.find((entry) => entry.id === compareRight)
     if (!left || !right) {
+      return null
+    }
+
+    return {
+      left: { ...left.requestBase, region: connectionState.region },
+      right: { ...right.requestBase, region: connectionState.region }
+    }
+  }
+
+  function applyCompareRequest(request: ComparisonRequest): void {
+    setCompareLeft(
+      request.left.kind === 'profile'
+        ? `profile:${request.left.profile}`
+        : request.left.kind === 'saved-target'
+          ? `target:${request.left.targetId}`
+          : `session:${request.left.sessionId}`
+    )
+    setCompareRight(
+      request.right.kind === 'profile'
+        ? `profile:${request.right.profile}`
+        : request.right.kind === 'saved-target'
+          ? `target:${request.right.targetId}`
+          : `session:${request.right.sessionId}`
+    )
+  }
+
+  async function refreshComparePresets(): Promise<void> {
+    try {
+      const next = await listComparisonPresets()
+      setComparePresets(next)
+      setSelectedComparePresetId((current) => {
+        if (current && next.some((preset) => preset.id === current)) return current
+        return next[0]?.id ?? ''
+      })
+    } catch (err) {
+      setComparePresetMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function handleLoadComparePreset(): Promise<void> {
+    if (!selectedComparePresetId) {
+      return
+    }
+
+    setComparePresetBusy('load')
+    setComparePresetMessage('')
+    try {
+      const preset = await getComparisonPreset(selectedComparePresetId)
+      if (!preset) {
+        setLoadedComparePreset(null)
+        setComparePresetMessage('Selected compare preset no longer exists.')
+        await refreshComparePresets()
+        return
+      }
+
+      setLoadedComparePreset(preset)
+      setComparePresetName(preset.name)
+      setComparePresetDescription(preset.description)
+      applyCompareRequest(preset.request)
+      setComparePresetMessage(`Loaded compare preset "${preset.name}".`)
+    } catch (err) {
+      setComparePresetMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setComparePresetBusy('')
+    }
+  }
+
+  async function handleSaveComparePreset(): Promise<void> {
+    const request = buildCompareRequest()
+    if (!request) {
+      setComparePresetMessage('Choose two contexts before saving a compare preset.')
+      return
+    }
+    if (!comparePresetName.trim()) {
+      setComparePresetMessage('Enter a compare preset name.')
+      return
+    }
+
+    setComparePresetBusy('save')
+    setComparePresetMessage('')
+    try {
+      const summary = await saveComparisonPreset({
+        id: loadedComparePreset?.id,
+        name: comparePresetName.trim(),
+        description: comparePresetDescription.trim(),
+        request
+      })
+      await refreshComparePresets()
+      setSelectedComparePresetId(summary.id)
+      setLoadedComparePreset(await getComparisonPreset(summary.id))
+      setComparePresetMessage(`Saved compare preset "${summary.name}".`)
+    } catch (err) {
+      setComparePresetMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setComparePresetBusy('')
+    }
+  }
+
+  async function handleDeleteComparePreset(): Promise<void> {
+    if (!selectedComparePresetId) {
+      return
+    }
+
+    setComparePresetBusy('delete')
+    setComparePresetMessage('')
+    try {
+      await deleteComparisonPreset(selectedComparePresetId)
+      if (loadedComparePreset?.id === selectedComparePresetId) {
+        setLoadedComparePreset(null)
+      }
+      setComparePresetName('')
+      setComparePresetDescription('')
+      await refreshComparePresets()
+      setComparePresetMessage('Compare preset deleted.')
+    } catch (err) {
+      setComparePresetMessage(err instanceof Error ? err.message : String(err))
+    } finally {
+      setComparePresetBusy('')
+    }
+  }
+
+  function handleCompareLaunch(): void {
+    const request = buildCompareRequest()
+    if (!request) {
       setError('Choose two contexts to compare.')
       return
     }
 
-    onOpenCompare({
-      left: { ...left.requestBase, region: connectionState.region },
-      right: { ...right.requestBase, region: connectionState.region }
-    })
+    onOpenCompare(request)
   }
 
   function loadTargetIntoForm(target: AwsAssumeRoleTarget): void {
@@ -425,15 +721,68 @@ export function SessionHub({
       defaultSessionName: target.defaultSessionName,
       externalId: target.externalId,
       sourceProfile: target.sourceProfile,
-      defaultRegion: target.defaultRegion
+      defaultRegion: target.defaultRegion,
+      environment: target.environment,
+      criticalAccessLevel: target.criticalAccessLevel,
+      tags: target.tags,
+      lastUsedAt: target.lastUsedAt
     })
   }
 
   const activeSessionCount = connectionState.sessions.filter((session) => session.status === 'active').length
   const expiredSessionCount = connectionState.sessions.filter((session) => session.status === 'expired').length
+  const expiringSessions = connectionState.sessions.filter((session) => session.expiryState === 'expiring')
+  const activeExpiringSession = connectionState.activeSession
+    ? expiringSessions.find((session) => session.id === connectionState.activeSession?.id) ?? null
+    : null
   const currentContextMeta = connectionState.activeSession
     ? connectionState.activeSession.assumedRoleArn || connectionState.activeSession.roleArn
     : connectionState.selectedProfile?.name || connectionState.profile || 'No profile selected'
+  const terminalCommandTemplates = useMemo(() => {
+    const currentConnection = connectionState.connection
+    if (!currentConnection) {
+      return []
+    }
+
+    const currentRegion = currentConnection.region || connectionState.region || 'us-east-1'
+    const contextLabel = currentConnection.label || currentConnection.profile || 'current-context'
+
+    return [
+      {
+        id: 'aws-identity',
+        label: 'AWS Identity',
+        description: 'Confirm the active caller identity and region before running sensitive actions.',
+        command: `aws sts get-caller-identity; aws configure get region`
+      },
+      {
+        id: 'aws-inventory',
+        label: 'AWS Inventory',
+        description: 'Quickly inspect common account-scoped resources in the active region.',
+        command: `aws eks list-clusters --region ${currentRegion}; aws ec2 describe-instances --max-items 10 --region ${currentRegion}`
+      },
+      {
+        id: 'kubectl',
+        label: 'kubectl Bootstrap',
+        description: 'Prepare or reuse an EKS cluster name, then list nodes and pods from the active AWS context.',
+        command:
+          `$clusterName = '<eks-cluster-name>'; aws eks update-kubeconfig --name $clusterName --region ${currentRegion}; kubectl config current-context; kubectl get nodes; kubectl get pods -A`
+      },
+      {
+        id: 'terraform',
+        label: 'Terraform Plan',
+        description: 'Export the active AWS region, then run a safe Terraform init and plan in the current shell.',
+        command:
+          `$env:AWS_REGION='${currentRegion}'; $env:AWS_DEFAULT_REGION='${currentRegion}'; terraform init; terraform plan -var aws_region=${shellQuote(currentRegion)}`
+      },
+      {
+        id: 'session-debug',
+        label: 'Session Debug',
+        description: 'Capture the current shell AWS variables and identity for support or incident debugging.',
+        command:
+          `Write-Host 'Context: ${contextLabel}'; Get-ChildItem Env:AWS_* | Sort-Object Name; aws sts get-caller-identity`
+      }
+    ]
+  }, [connectionState.connection, connectionState.region])
   void countdownTick
 
   return (
@@ -486,7 +835,7 @@ export function SessionHub({
           <div className="session-hub-shell-stat-card">
             <span>Diff contexts</span>
             <strong>{compareOptions.length}</strong>
-            <small>Profiles and sessions available to compare</small>
+            <small>Profiles, saved targets, and sessions available to compare</small>
           </div>
         </div>
       </section>
@@ -523,6 +872,14 @@ export function SessionHub({
           <button type="button" className="session-hub-toolbar-btn" onClick={() => void refreshSessionHub()}>
             Refresh Sessions
           </button>
+          <button
+            type="button"
+            className="session-hub-toolbar-btn"
+            disabled={expiringSessions.length === 0 || busyId === 'refresh-expiring'}
+            onClick={() => void handleRefreshExpiringSessions()}
+          >
+            Refresh Expiring
+          </button>
         </div>
         <div className="session-hub-shell-status">
           <div className="session-hub-context-chip">
@@ -532,6 +889,41 @@ export function SessionHub({
           <FreshnessIndicator freshness={freshness} label="Sessions last refreshed" staleLabel="Session list may be stale" />
         </div>
       </div>
+
+      {expiringSessions.length > 0 && (
+        <section className="session-hub-refresh-banner">
+          <div>
+            <strong>
+              {expiringSessions.length === 1
+                ? '1 session is expiring soon.'
+                : `${expiringSessions.length} sessions are expiring soon.`}
+            </strong>
+            <p>
+              Refresh temporary credentials before terminal, compare, or console actions start failing.
+              {activeExpiringSession ? ` Current active context: ${activeExpiringSession.label}.` : ''}
+            </p>
+          </div>
+          <div className="button-row session-hub-toolbar">
+            <button
+              type="button"
+              className="accent"
+              disabled={busyId === 'refresh-expiring'}
+              onClick={() => void handleRefreshExpiringSessions()}
+            >
+              Refresh All Expiring
+            </button>
+            {activeExpiringSession && (
+              <button
+                type="button"
+                disabled={busyId === activeExpiringSession.id}
+                onClick={() => void handleRefreshSession(activeExpiringSession.id, { activateOnSuccess: true })}
+              >
+                Refresh Active Context
+              </button>
+            )}
+          </div>
+        </section>
+      )}
 
       <div className="session-hub-main-layout">
         <div className="column stack session-hub-editor-column">
@@ -575,6 +967,36 @@ export function SessionHub({
                 }}
               />
               <label className="field"><span>Default Region</span><input value={draft.defaultRegion} onChange={(event) => updateDraft('defaultRegion', event.target.value)} /></label>
+              <label className="field">
+                <span>Environment</span>
+                <input
+                  value={draft.environment}
+                  onChange={(event) => updateDraft('environment', event.target.value)}
+                  placeholder="prod, staging, shared"
+                />
+              </label>
+              <label className="field">
+                <span>Critical Access</span>
+                <select
+                  value={draft.criticalAccessLevel}
+                  onChange={(event) =>
+                    updateDraft('criticalAccessLevel', event.target.value as AwsAssumeRoleTarget['criticalAccessLevel'])
+                  }
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="critical">Critical</option>
+                </select>
+              </label>
+              <label className="field session-hub-target-form-span">
+                <span>Tags</span>
+                <input
+                  value={draft.tags.join(', ')}
+                  onChange={(event) => updateDraft('tags', formatTagInput(event.target.value))}
+                  placeholder="team:platform, ecr, prod"
+                />
+              </label>
             </div>
             <div className="button-row session-hub-toolbar">
               <button type="button" className="accent" disabled={busyId === 'save-target'} onClick={() => void handleSaveTarget()}>
@@ -628,9 +1050,27 @@ export function SessionHub({
                       <div>
                         <strong>{target.label}</strong>
                         <div className="hero-path">{target.roleArn}</div>
+                        <div className="session-hub-target-meta">
+                          <span className="session-hub-target-pill">{getEnvironmentLabel(target.environment)}</span>
+                          <span className={getCriticalityClassName(target.criticalAccessLevel)}>{target.criticalAccessLevel}</span>
+                          <span className="session-hub-target-pill">{target.sourceProfile || '-'}</span>
+                          <span className="session-hub-target-pill">{target.defaultRegion || '-'}</span>
+                        </div>
+                        {target.tags.length > 0 && (
+                          <div className="session-hub-target-tags">
+                            {target.tags.map((tag) => (
+                              <span key={tag} className="session-hub-target-tag">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <div className="session-hub-target-summary">
+                          <span>Session: {target.defaultSessionName}</span>
+                          <span>{formatRelativeTime(target.lastUsedAt)}</span>
+                        </div>
                       </div>
                     </div>
-                    <div className="hero-path">Profile: {target.sourceProfile || '-'} · Region: {target.defaultRegion || '-'}</div>
                     <div className="button-row session-hub-toolbar">
                       <button type="button" className="accent" disabled={busyId === target.id} onClick={() => void handleAssumeTarget(target)}>Assume</button>
                       <button type="button" onClick={() => loadTargetIntoForm(target)}>Edit</button>
@@ -666,7 +1106,7 @@ export function SessionHub({
                   <div className="hero-path">Source: {session.sourceProfile || '-'} · {session.region}</div>
                 </div>
                 <div>
-                  <span className={session.status === 'active' ? 'active-chip' : 'inactive-chip'}>{session.status}</span>
+                  <span className={getSessionStatusClassName(session)}>{getExpiryLabel(session)}</span>
                 </div>
                 <div>{session.accountId || '-'}</div>
                 <div className="mono">{session.accessKeyId || '-'}</div>
@@ -680,16 +1120,9 @@ export function SessionHub({
                   <button
                     type="button"
                     disabled={busyId === session.id}
-                    onClick={() => void handleAssume({
-                      label: session.label,
-                      roleArn: session.roleArn,
-                      sessionName: session.label.replace(/\s+/g, '-').toLowerCase(),
-                      externalId: session.externalId || undefined,
-                      sourceProfile: session.sourceProfile || undefined,
-                      region: session.region
-                    })}
+                    onClick={() => void handleRefreshSession(session.id, { activateOnSuccess: connectionState.activeSession?.id === session.id })}
                   >
-                    Re-Assume
+                    {session.expiryState === 'expiring' ? 'Refresh Now' : 'Re-Assume'}
                   </button>
                   <button type="button" className="danger" disabled={busyId === session.id} onClick={() => void handleDeleteSession(session.id)}>Forget</button>
                 </div>
@@ -718,13 +1151,86 @@ export function SessionHub({
               {compareOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
           </label>
+          <label className="field">
+            <span>Saved Preset</span>
+            <select value={selectedComparePresetId} onChange={(event) => setSelectedComparePresetId(event.target.value)}>
+              <option value="">Select...</option>
+              {comparePresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name} ({preset.leftLabel} vs {preset.rightLabel})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Preset Name</span>
+            <input
+              value={comparePresetName}
+              onChange={(event) => setComparePresetName(event.target.value)}
+              placeholder="Prod vs staging"
+            />
+          </label>
+          <label className="field session-hub-compare-description">
+            <span>Preset Description</span>
+            <input
+              value={comparePresetDescription}
+              onChange={(event) => setComparePresetDescription(event.target.value)}
+              placeholder="Optional note for this reusable compare pair"
+            />
+          </label>
         </div>
         <div className="button-row session-hub-toolbar">
+          <button
+            type="button"
+            disabled={!selectedComparePresetId || comparePresetBusy === 'load'}
+            onClick={() => void handleLoadComparePreset()}
+          >
+            {comparePresetBusy === 'load' ? 'Loading...' : 'Load Preset'}
+          </button>
+          <button
+            type="button"
+            disabled={comparePresetBusy === 'save'}
+            onClick={() => void handleSaveComparePreset()}
+          >
+            {comparePresetBusy === 'save' ? 'Saving...' : loadedComparePreset ? 'Update Preset' : 'Save Preset'}
+          </button>
+          <button
+            type="button"
+            disabled={!selectedComparePresetId || comparePresetBusy === 'delete'}
+            onClick={() => void handleDeleteComparePreset()}
+          >
+            {comparePresetBusy === 'delete' ? 'Deleting...' : 'Delete Preset'}
+          </button>
           <button type="button" className="accent" onClick={handleCompareLaunch}>
             Open Compare Workspace
           </button>
         </div>
+        {comparePresetMessage && <div className="empty-state compact">{comparePresetMessage}</div>}
         <div className="empty-state compact">Diff Mode opens a dedicated workspace with inventory, posture, ownership, cost, and risk-focused comparisons.</div>
+      </section>
+
+      <div className="overview-section-title">Command Templates</div>
+      <section className="panel session-hub-compare-panel">
+        {terminalCommandTemplates.length === 0 ? (
+          <div className="empty-state compact">Select or activate a context first to send suggested commands to the terminal.</div>
+        ) : (
+          <div className="info-card-grid info-card-grid-3">
+            {terminalCommandTemplates.map((template) => (
+              <article key={template.id} className="info-card session-hub-command-card">
+                <div className="info-card__copy">
+                  <strong>{template.label}</strong>
+                  <p>{template.description}</p>
+                  <code className="session-hub-command-preview">{template.command}</code>
+                </div>
+                <div className="button-row">
+                  <button type="button" className="accent" onClick={() => onRunTerminalCommand(template.command)}>
+                    Send To Terminal
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       <CollapsibleInfoPanel title="Recommended Next Actions" className="panel session-hub-compare-panel">
