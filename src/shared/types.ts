@@ -1120,6 +1120,22 @@ export type GovernanceTagDefaultsUpdate = {
   values?: Partial<Record<GovernanceTagKey, string>>
 }
 
+export type CompliancePolicyPackFocus =
+  | 'tagging-defaults'
+  | 'encryption'
+  | 'public-exposure'
+  | 'backup'
+
+export type CompliancePolicyPackDefinition = {
+  id: string
+  title: string
+  focus: CompliancePolicyPackFocus
+  description: string
+  resourceTypes: string[]
+  expectations: string[]
+  updatedAt: string
+}
+
 export type CloudWatchQueryFilter = {
   profile?: string
   region?: string
@@ -2026,7 +2042,12 @@ export type ComplianceFinding = {
   resourceId: string
   description: string
   recommendedAction: string
+  policyPackIds?: string[]
   remediation?: ComplianceRemediationAction
+}
+
+export type CompliancePolicyPack = CompliancePolicyPackDefinition & {
+  findingCount: number
 }
 
 export type ComplianceSummary = {
@@ -2038,6 +2059,7 @@ export type ComplianceSummary = {
 export type ComplianceReport = {
   generatedAt: string
   findings: ComplianceFinding[]
+  policyPacks: CompliancePolicyPack[]
   summary: ComplianceSummary
   warnings: string[]
 }

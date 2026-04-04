@@ -58,6 +58,7 @@ export function ComplianceCenter({
   const [categoryFilter, setCategoryFilter] = useState<'all' | ComplianceCategory>('all')
   const [serviceFilter, setServiceFilter] = useState<'all' | ServiceId>('all')
   const [search, setSearch] = useState('')
+  const [policyPacksCollapsed, setPolicyPacksCollapsed] = useState(false)
   const [rotatingSecretId, setRotatingSecretId] = useState('')
   const { freshness, beginRefresh, completeRefresh, failRefresh } = useFreshnessState()
 
@@ -89,6 +90,10 @@ export function ComplianceCenter({
     )
   }, [report])
 
+  const policyPackTitles = useMemo(() => (
+    new Map((report?.policyPacks ?? []).map((pack) => [pack.id, pack.title]))
+  ), [report])
+
   const filteredFindings = useMemo(() => {
     if (!report) return []
 
@@ -104,6 +109,7 @@ export function ComplianceCenter({
         finding.description,
         finding.resourceId,
         finding.recommendedAction,
+        ...(finding.policyPackIds ?? []).map((packId) => policyPackTitles.get(packId) ?? packId),
         formatService(finding.service),
         finding.category,
         finding.severity
@@ -111,7 +117,7 @@ export function ComplianceCenter({
 
       return searchable.includes(query)
     })
-  }, [report, severityFilter, categoryFilter, serviceFilter, search])
+  }, [report, severityFilter, categoryFilter, serviceFilter, search, policyPackTitles])
 
   const groupedFindings = useMemo(() => {
     const grouped = new Map<ComplianceSeverity, Map<ComplianceCategory, ComplianceFinding[]>>()
@@ -268,7 +274,119 @@ export function ComplianceCenter({
         </div>
       </section>
 
-      <div className="tf-shell-toolbar compliance-shell-toolbar">
+      <section className="overview-tiles compliance-summary-grid">
+        <div className="overview-tile highlight compliance-overview-tile">
+          <strong>{report?.summary.total ?? 0}</strong>
+          <span>Total findings</span>
+        </div>
+        <div className="overview-tile compliance-overview-tile">
+          <strong>{report?.summary.bySeverity.high ?? 0}</strong>
+          <span>High severity</span>
+        </div>
+        <div className="overview-tile compliance-overview-tile">
+          <strong>{report?.summary.bySeverity.medium ?? 0}</strong>
+          <span>Medium severity</span>
+        </div>
+        <div className="overview-tile compliance-overview-tile">
+          <strong>{report?.summary.bySeverity.low ?? 0}</strong>
+          <span>Low severity</span>
+        </div>
+        <div className="overview-tile compliance-overview-tile">
+          <strong>{formatTimestamp(report?.generatedAt ?? '')}</strong>
+          <span>Last scan</span>
+        </div>
+      </section>
+
+      {report?.policyPacks.length ? (
+        <section className="panel stack compliance-panel">
+          <div className="panel-header">
+            <div>
+              <div className="eyebrow compliance-panel-eyebrow">Local policy packs</div>
+              <h3>Governance automation baselines</h3>
+            </div>
+            <div className="compliance-panel-actions">
+              <span className="hero-path compliance-panel-summary">
+                {report.policyPacks.length} active pack{report.policyPacks.length === 1 ? '' : 's'}
+              </span>
+              <button
+                type="button"
+                className="compliance-collapse-button"
+                onClick={() => setPolicyPacksCollapsed((current) => !current)}
+              >
+                {policyPacksCollapsed ? 'Expand' : 'Collapse'}
+              </button>
+            </div>
+          </div>
+          {policyPacksCollapsed ? (
+            <div className="hero-path compliance-policy-pack-collapsed">
+              <span>
+                {report.policyPacks.reduce((total, pack) => total + pack.findingCount, 0)} finding
+                {report.policyPacks.reduce((total, pack) => total + pack.findingCount, 0) === 1 ? '' : 's'}
+              </span>
+              <span>
+                {report.policyPacks.map((pack) => `${pack.title} (${pack.findingCount})`).join(' • ')}
+              </span>
+            </div>
+          ) : (
+            <div className="compliance-policy-pack-grid">
+              {report.policyPacks.map((pack) => (
+                <article key={pack.id} className="compliance-policy-pack-row">
+                  <div className="compliance-policy-pack-main">
+                    <div className="compliance-finding-badges">
+                      <span className="signal-badge">{pack.focus.replace(/-/g, ' ')}</span>
+                    </div>
+                    <h4>{pack.title}</h4>
+                    <p>{pack.description}</p>
+                  </div>
+                  <div className="compliance-policy-pack-scope">
+                    <span className="compliance-policy-pack-label">Coverage</span>
+                    <strong>{pack.resourceTypes.join(', ')}</strong>
+                  </div>
+                  <div className="compliance-policy-pack-expectations">
+                    <span className="compliance-policy-pack-label">Expectations</span>
+                    <div className="compliance-policy-pack-list">
+                      {pack.expectations.map((expectation) => (
+                        <span key={expectation}>{expectation}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="compliance-policy-pack-count">
+                    <strong>{pack.findingCount}</strong>
+                    <span>finding{pack.findingCount === 1 ? '' : 's'}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      <section className="panel stack compliance-panel">
+        <div className="panel-header">
+          <div>
+            <div className="eyebrow compliance-panel-eyebrow">Category posture</div>
+            <h3>Finding distribution</h3>
+          </div>
+          <span className="hero-path compliance-panel-summary">
+            {filteredFindings.length} finding{filteredFindings.length === 1 ? '' : 's'} in the active queue
+          </span>
+        </div>
+        <div className="compliance-category-strip">
+          {CATEGORY_ORDER.map((category) => (
+            <button
+              key={category}
+              type="button"
+              className={`compliance-category-chip ${categoryFilter === category ? 'active' : ''}`}
+              onClick={() => setCategoryFilter((current) => current === category ? 'all' : category)}
+            >
+              <span>{category}</span>
+              <strong>{report?.summary.byCategory[category] ?? 0}</strong>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <div className="tf-shell-toolbar compliance-shell-toolbar compliance-shell-toolbar-inline">
         <div className="tf-toolbar compliance-shell-toolbar-main">
           <button type="button" className="accent" onClick={() => void load('manual')} disabled={loading}>
             {loading ? 'Refreshing...' : 'Refresh report'}
@@ -313,54 +431,6 @@ export function ComplianceCenter({
           <FreshnessIndicator freshness={freshness} label="Compliance report" staleLabel="Refresh report" />
         </div>
       </div>
-
-      <section className="overview-tiles compliance-summary-grid">
-        <div className="overview-tile highlight compliance-overview-tile">
-          <strong>{report?.summary.total ?? 0}</strong>
-          <span>Total findings</span>
-        </div>
-        <div className="overview-tile compliance-overview-tile">
-          <strong>{report?.summary.bySeverity.high ?? 0}</strong>
-          <span>High severity</span>
-        </div>
-        <div className="overview-tile compliance-overview-tile">
-          <strong>{report?.summary.bySeverity.medium ?? 0}</strong>
-          <span>Medium severity</span>
-        </div>
-        <div className="overview-tile compliance-overview-tile">
-          <strong>{report?.summary.bySeverity.low ?? 0}</strong>
-          <span>Low severity</span>
-        </div>
-        <div className="overview-tile compliance-overview-tile">
-          <strong>{formatTimestamp(report?.generatedAt ?? '')}</strong>
-          <span>Last scan</span>
-        </div>
-      </section>
-
-      <section className="panel stack compliance-panel">
-        <div className="panel-header">
-          <div>
-            <div className="eyebrow compliance-panel-eyebrow">Category posture</div>
-            <h3>Finding distribution</h3>
-          </div>
-          <span className="hero-path compliance-panel-summary">
-            {filteredFindings.length} finding{filteredFindings.length === 1 ? '' : 's'} in the active queue
-          </span>
-        </div>
-        <div className="compliance-category-strip">
-          {CATEGORY_ORDER.map((category) => (
-            <button
-              key={category}
-              type="button"
-              className={`compliance-category-chip ${categoryFilter === category ? 'active' : ''}`}
-              onClick={() => setCategoryFilter((current) => current === category ? 'all' : category)}
-            >
-              <span>{category}</span>
-              <strong>{report?.summary.byCategory[category] ?? 0}</strong>
-            </button>
-          ))}
-        </div>
-      </section>
 
       {report?.warnings.length ? (
         <section className="panel stack compliance-panel compliance-warning-panel">
@@ -436,6 +506,13 @@ export function ComplianceCenter({
                           <span>Recommended action</span>
                           <strong>{finding.recommendedAction}</strong>
                         </div>
+                        {finding.policyPackIds?.length ? (
+                          <div className="compliance-policy-pack-list">
+                            {finding.policyPackIds.map((packId) => (
+                              <span key={packId}>{policyPackTitles.get(packId) ?? packId}</span>
+                            ))}
+                          </div>
+                        ) : null}
                       </article>
                     ))}
                   </div>

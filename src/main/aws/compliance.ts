@@ -5,10 +5,14 @@ import type {
   AwsConnection,
   ComplianceCategory,
   ComplianceFinding,
+  CompliancePolicyPack,
   ComplianceReport,
   ComplianceSeverity,
   ComplianceSummary,
+  GovernanceTagKey,
   LoadBalancerWorkspace,
+  RdsClusterDetail,
+  RdsInstanceDetail,
   SecretsManagerSecretSummary,
   ServiceId,
   WafWebAclSummary
@@ -17,10 +21,13 @@ import { awsClientConfig, readTags } from './client'
 import { listTrails } from './cloudtrail'
 import { listKeyPairs } from './keyPairs'
 import { listLoadBalancerWorkspaces } from './loadBalancers'
+import { describeDbCluster, describeDbInstance, listDbClusters, listDbInstances } from './rds'
 import { listSecrets } from './secretsManager'
+import { listBucketGovernance } from './s3'
 import { listSecurityGroups } from './securityGroups'
 import { listVpcs } from './vpc'
 import { describeWebAcl, listWebAcls } from './waf'
+import { getCompliancePolicyPacks, getGovernanceTagDefaults } from '../phase1FoundationStore'
 
 type Ec2InventoryItem = {
   instanceId: string
@@ -48,6 +55,7 @@ const VPC_SPRAWL_THRESHOLD = 3
 const SECURITY_GROUP_SPRAWL_THRESHOLD = 20
 const WEAK_TAGGING_RATIO_THRESHOLD = 0.35
 const MIN_TAGGING_SAMPLE_SIZE = 6
+const MIN_RDS_BACKUP_RETENTION_DAYS = 7
 
 const RISKY_PORTS = new Set([20, 21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 389, 443, 445, 1433, 1521, 2049, 2375, 2376, 3000, 3306, 3389, 5432, 5601, 5672, 6379, 8080, 8443, 9200, 9300, 27017])
 const GOVERNANCE_TAG_KEYS = ['Name', 'Environment', 'Owner', 'Project', 'CostCenter']
@@ -249,14 +257,48 @@ function addFinding(
     resourceId: finding.resourceId,
     description: finding.description,
     recommendedAction: finding.recommendedAction,
+    policyPackIds: finding.policyPackIds,
     remediation: finding.remediation
   })
+}
+
+async function mapWithConcurrency<TInput, TOutput>(
+  items: TInput[],
+  limit: number,
+  mapper: (item: TInput) => Promise<TOutput>
+): Promise<TOutput[]> {
+  const results = new Array<TOutput>(items.length)
+  let index = 0
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const current = index
+      index += 1
+      if (current >= items.length) {
+        return
+      }
+      results[current] = await mapper(items[current])
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
+  return results
+}
+
+function severityRank(value: ComplianceSeverity): number {
+  return value === 'high' ? 3 : value === 'medium' ? 2 : 1
+}
+
+function maxSeverity(left: ComplianceSeverity, right: ComplianceSeverity): ComplianceSeverity {
+  return severityRank(left) >= severityRank(right) ? left : right
 }
 
 export async function getComplianceReport(connection: AwsConnection): Promise<ComplianceReport> {
   const warnings: string[] = []
   const region = connection.region
   const findings: ComplianceFinding[] = []
+  const governanceDefaults = getGovernanceTagDefaults()
+  const policyPackDefinitions = getCompliancePolicyPacks()
 
   const [
     trails,
@@ -267,7 +309,10 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
     securityGroups,
     secrets,
     keyPairs,
-    vpcs
+    vpcs,
+    s3Governance,
+    rdsInstanceSummaries,
+    rdsClusterSummaries
   ] = await Promise.all([
     loadSection(warnings, 'CloudTrail inventory', [] as Awaited<ReturnType<typeof listTrails>>, () => listTrails(connection)),
     loadSection(warnings, 'EC2 inventory', [] as Ec2InventoryItem[], () => listEc2Inventory(connection)),
@@ -277,7 +322,19 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
     loadSection(warnings, 'Security groups', [] as Awaited<ReturnType<typeof listSecurityGroups>>, () => listSecurityGroups(connection)),
     loadSection(warnings, 'Secrets Manager', [] as SecretsManagerSecretSummary[], () => listSecrets(connection)),
     loadSection(warnings, 'Key pairs', [] as Awaited<ReturnType<typeof listKeyPairs>>, () => listKeyPairs(connection)),
-    loadSection(warnings, 'VPC inventory', [] as Awaited<ReturnType<typeof listVpcs>>, () => listVpcs(connection))
+    loadSection(warnings, 'VPC inventory', [] as Awaited<ReturnType<typeof listVpcs>>, () => listVpcs(connection)),
+    loadSection(warnings, 'S3 governance', null as Awaited<ReturnType<typeof listBucketGovernance>> | null, () => listBucketGovernance(connection)),
+    loadSection(warnings, 'RDS instances', [] as Awaited<ReturnType<typeof listDbInstances>>, () => listDbInstances(connection)),
+    loadSection(warnings, 'RDS clusters', [] as Awaited<ReturnType<typeof listDbClusters>>, () => listDbClusters(connection))
+  ])
+
+  const [rdsInstances, rdsClusters] = await Promise.all([
+    loadSection(warnings, 'RDS instance posture', [] as RdsInstanceDetail[], () =>
+      mapWithConcurrency(rdsInstanceSummaries, 3, (instance) => describeDbInstance(connection, instance.dbInstanceIdentifier))
+    ),
+    loadSection(warnings, 'RDS cluster posture', [] as RdsClusterDetail[], () =>
+      mapWithConcurrency(rdsClusterSummaries, 3, (cluster) => describeDbCluster(connection, cluster.dbClusterIdentifier))
+    )
   ])
 
   const wafAssociations = await loadSection(warnings, 'WAF associations', new Set<string>(), () =>
@@ -298,6 +355,7 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
         ? `No CloudTrail trails were discovered in ${region}.`
         : `CloudTrail trails exist in ${region}, but none are actively logging.`,
       recommendedAction: 'Enable a logging CloudTrail trail with centralized S3 storage and log file validation.',
+      policyPackIds: ['backup-resilience'],
       remediation: {
         kind: 'navigate',
         label: 'Open CloudTrail',
@@ -337,6 +395,7 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
         resourceId: loadBalancer.summary.name || loadBalancer.summary.arn,
         description: `${formatResourceLabel(loadBalancer.summary.arn, loadBalancer.summary.name)} is not associated with a regional WAF web ACL.`,
         recommendedAction: 'Review the load balancer exposure and attach an appropriate WAF web ACL before enabling additional public traffic.',
+        policyPackIds: ['public-exposure-guardrails'],
         remediation: {
           kind: 'navigate',
           label: 'Open WAF',
@@ -364,6 +423,7 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
       resourceId: group.groupId,
       description: `${formatResourceLabel(group.groupId, group.groupName)} allows ${exposedPorts} from 0.0.0.0/0 or ::/0.`,
       recommendedAction: 'Restrict the rule scope to trusted CIDR ranges or private security group references.',
+      policyPackIds: ['public-exposure-guardrails'],
       remediation: {
         kind: 'navigate',
         label: 'Open Security Groups',
@@ -388,6 +448,7 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
       resourceId: secret.name || secret.arn,
       description: `${secret.name} does not have automatic rotation enabled.`,
       recommendedAction: 'Enable rotation for credentials and API secrets that can be rotated safely.',
+      policyPackIds: ['encryption-baseline'],
       remediation: {
         kind: 'secret-rotate',
         label: 'Rotate Secret',
@@ -492,14 +553,189 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
       service: primaryService,
       region,
       resourceId: `${weakTaggedResources.length}/${taggingSample.length}`,
-      description: `${weakTaggedResources.length} of ${taggingSample.length} sampled resources are missing governance-oriented tags such as ${GOVERNANCE_TAG_KEYS.join(', ')}.`,
+      description: `${weakTaggedResources.length} of ${taggingSample.length} sampled resources are missing governance-oriented tags such as ${GOVERNANCE_TAG_KEYS.join(', ')}. Current defaults: ${GOVERNANCE_TAG_KEYS.map((key) => `${key}=${governanceDefaults.values[key as GovernanceTagKey] || '<unset>'}`).join(', ')}.`,
       recommendedAction: 'Review tagging standards for ownership, environment, and cost attribution before enforcing stricter automation.',
+      policyPackIds: ['tagging-defaults'],
       remediation: {
         kind: 'terminal',
         label: 'Open Tag Audit Command',
         command: `aws resourcegroupstaggingapi get-resources --region ${region}`
       }
     })
+  }
+
+  for (const bucket of s3Governance?.buckets ?? []) {
+    if (bucket.encryption.status !== 'enabled') {
+      addFinding(findings, {
+        idParts: ['compliance', 'bucket-encryption', bucket.bucketName],
+        title: 'S3 bucket does not meet encryption baseline',
+        severity: bucket.encryption.status === 'unknown' ? 'medium' : 'high',
+        category: 'security',
+        service: 's3',
+        region: bucket.region,
+        resourceId: bucket.bucketName,
+        description: bucket.encryption.summary,
+        recommendedAction: 'Enable default encryption on the bucket and verify the selected SSE mode matches local policy.',
+        policyPackIds: ['encryption-baseline'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open S3',
+          serviceId: 's3',
+          resourceId: bucket.bucketName
+        }
+      })
+    }
+
+    if (bucket.publicAccessBlock.status !== 'enabled') {
+      addFinding(findings, {
+        idParts: ['compliance', 'bucket-public-access', bucket.bucketName],
+        title: 'S3 bucket does not meet public exposure guardrails',
+        severity: bucket.publicAccessBlock.status === 'unknown' ? 'medium' : 'high',
+        category: 'security',
+        service: 's3',
+        region: bucket.region,
+        resourceId: bucket.bucketName,
+        description: bucket.publicAccessBlock.summary,
+        recommendedAction: 'Enable all public access block controls unless the bucket is intentionally public and approved.',
+        policyPackIds: ['public-exposure-guardrails'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open S3',
+          serviceId: 's3',
+          resourceId: bucket.bucketName
+        }
+      })
+    }
+
+    if (bucket.important && bucket.versioning.status !== 'enabled') {
+      addFinding(findings, {
+        idParts: ['compliance', 'bucket-versioning', bucket.bucketName],
+        title: 'Important S3 bucket misses the backup resilience baseline',
+        severity: bucket.versioning.status === 'unknown' ? 'medium' : 'high',
+        category: 'compliance',
+        service: 's3',
+        region: bucket.region,
+        resourceId: bucket.bucketName,
+        description: `${bucket.versioning.summary} ${bucket.importantReason}`.trim(),
+        recommendedAction: 'Enable versioning so rollback and recovery remain available for important bucket contents.',
+        policyPackIds: ['backup-resilience'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open S3',
+          serviceId: 's3',
+          resourceId: bucket.bucketName
+        }
+      })
+    }
+  }
+
+  for (const instance of rdsInstances) {
+    if (!instance.storageEncrypted) {
+      addFinding(findings, {
+        idParts: ['compliance', 'rds-encryption', instance.summary.dbInstanceIdentifier],
+        title: 'RDS instance does not meet encryption baseline',
+        severity: 'high',
+        category: 'security',
+        service: 'rds',
+        region,
+        resourceId: instance.summary.dbInstanceIdentifier,
+        description: `${instance.summary.dbInstanceIdentifier} has storage encryption disabled.`,
+        recommendedAction: 'Use an encrypted replacement path or snapshot-restore workflow to bring the instance under the local encryption baseline.',
+        policyPackIds: ['encryption-baseline'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open RDS',
+          serviceId: 'rds',
+          resourceId: instance.summary.dbInstanceIdentifier
+        }
+      })
+    }
+
+    if (instance.publiclyAccessible) {
+      addFinding(findings, {
+        idParts: ['compliance', 'rds-public', instance.summary.dbInstanceIdentifier],
+        title: 'RDS instance is publicly accessible',
+        severity: 'high',
+        category: 'security',
+        service: 'rds',
+        region,
+        resourceId: instance.summary.dbInstanceIdentifier,
+        description: `${instance.summary.dbInstanceIdentifier} exposes a public endpoint, which conflicts with the local public exposure guardrail.`,
+        recommendedAction: 'Move the instance behind private networking and verify only trusted operators or workloads can reach it.',
+        policyPackIds: ['public-exposure-guardrails'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open RDS',
+          serviceId: 'rds',
+          resourceId: instance.summary.dbInstanceIdentifier
+        }
+      })
+    }
+
+    if (instance.backupRetentionPeriod < MIN_RDS_BACKUP_RETENTION_DAYS) {
+      addFinding(findings, {
+        idParts: ['compliance', 'rds-backup', instance.summary.dbInstanceIdentifier],
+        title: 'RDS instance backup retention is below the local baseline',
+        severity: instance.backupRetentionPeriod === 0 ? 'high' : 'medium',
+        category: 'compliance',
+        service: 'rds',
+        region,
+        resourceId: instance.summary.dbInstanceIdentifier,
+        description: `${instance.summary.dbInstanceIdentifier} keeps ${instance.backupRetentionPeriod} day${instance.backupRetentionPeriod === 1 ? '' : 's'} of automated backups; local policy expects at least ${MIN_RDS_BACKUP_RETENTION_DAYS} days.`,
+        recommendedAction: 'Raise automated backup retention to the local minimum unless a reviewed exception already exists.',
+        policyPackIds: ['backup-resilience'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open RDS',
+          serviceId: 'rds',
+          resourceId: instance.summary.dbInstanceIdentifier
+        }
+      })
+    }
+  }
+
+  for (const cluster of rdsClusters) {
+    if (!cluster.summary.storageEncrypted) {
+      addFinding(findings, {
+        idParts: ['compliance', 'aurora-encryption', cluster.summary.dbClusterIdentifier],
+        title: 'Aurora cluster does not meet encryption baseline',
+        severity: 'high',
+        category: 'security',
+        service: 'rds',
+        region,
+        resourceId: cluster.summary.dbClusterIdentifier,
+        description: `${cluster.summary.dbClusterIdentifier} has storage encryption disabled.`,
+        recommendedAction: 'Plan an encrypted replacement or restore path before the cluster handles additional production traffic.',
+        policyPackIds: ['encryption-baseline'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open RDS',
+          serviceId: 'rds',
+          resourceId: cluster.summary.dbClusterIdentifier
+        }
+      })
+    }
+
+    if (cluster.backupRetentionPeriod < MIN_RDS_BACKUP_RETENTION_DAYS) {
+      addFinding(findings, {
+        idParts: ['compliance', 'aurora-backup', cluster.summary.dbClusterIdentifier],
+        title: 'Aurora backup retention is below the local baseline',
+        severity: cluster.backupRetentionPeriod === 0 ? 'high' : 'medium',
+        category: 'compliance',
+        service: 'rds',
+        region,
+        resourceId: cluster.summary.dbClusterIdentifier,
+        description: `${cluster.summary.dbClusterIdentifier} keeps ${cluster.backupRetentionPeriod} day${cluster.backupRetentionPeriod === 1 ? '' : 's'} of automated backups; local policy expects at least ${MIN_RDS_BACKUP_RETENTION_DAYS} days.`,
+        recommendedAction: 'Increase cluster backup retention to the local minimum unless the cluster already has an approved exception.',
+        policyPackIds: ['backup-resilience'],
+        remediation: {
+          kind: 'navigate',
+          label: 'Open RDS',
+          serviceId: 'rds',
+          resourceId: cluster.summary.dbClusterIdentifier
+        }
+      })
+    }
   }
 
   findings.sort((left, right) => {
@@ -521,9 +757,23 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
     return left.title.localeCompare(right.title)
   })
 
+  const policyPacks: CompliancePolicyPack[] = policyPackDefinitions.map((definition) => ({
+    ...definition,
+    findingCount: findings.filter((finding) => finding.policyPackIds?.includes(definition.id)).length
+  })).sort((left, right) => {
+    const rightSeverity = findings
+      .filter((finding) => finding.policyPackIds?.includes(right.id))
+      .reduce<ComplianceSeverity>((severity, finding) => maxSeverity(severity, finding.severity), 'low')
+    const leftSeverity = findings
+      .filter((finding) => finding.policyPackIds?.includes(left.id))
+      .reduce<ComplianceSeverity>((severity, finding) => maxSeverity(severity, finding.severity), 'low')
+    return severityRank(rightSeverity) - severityRank(leftSeverity) || right.findingCount - left.findingCount
+  })
+
   return {
     generatedAt: new Date().toISOString(),
     findings,
+    policyPacks,
     summary: createSummary(findings),
     warnings
   }

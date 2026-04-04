@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { app } from 'electron'
 
 import type {
+  CompliancePolicyPackDefinition,
   CloudWatchInvestigationHistoryEntry,
   CloudWatchInvestigationHistoryInput,
   CloudWatchQueryFilter,
@@ -24,6 +25,7 @@ import { readSecureJsonFile, writeSecureJsonFile } from './secureJson'
 
 type Phase1FoundationState = {
   governanceTagDefaults: GovernanceTagDefaults
+  compliancePolicyPacks: CompliancePolicyPackDefinition[]
   cloudWatchSavedQueries: CloudWatchSavedQuery[]
   cloudWatchQueryHistory: CloudWatchQueryHistoryEntry[]
   cloudWatchInvestigationHistory: CloudWatchInvestigationHistoryEntry[]
@@ -87,8 +89,64 @@ const DEFAULT_GOVERNANCE_TAG_DEFAULTS: GovernanceTagDefaults = {
   updatedAt: ''
 }
 
+const DEFAULT_COMPLIANCE_POLICY_PACKS: CompliancePolicyPackDefinition[] = [
+  {
+    id: 'tagging-defaults',
+    title: 'Tagging Defaults',
+    focus: 'tagging-defaults',
+    description: 'Apply local ownership and cost-allocation expectations before stricter automation is enforced.',
+    resourceTypes: ['EC2', 'VPC', 'Security Groups', 'Secrets Manager', 'Key Pairs', 'S3', 'RDS'],
+    expectations: [
+      'Require Owner, Environment, Project, and CostCenter governance tags.',
+      'Use saved governance tag defaults as the preferred baseline when new resources are created.',
+      'Escalate when sampled resources are missing most governance-oriented tags.'
+    ],
+    updatedAt: ''
+  },
+  {
+    id: 'encryption-baseline',
+    title: 'Encryption Baseline',
+    focus: 'encryption',
+    description: 'Check that storage services and managed databases default to encrypted-at-rest configurations.',
+    resourceTypes: ['S3', 'RDS'],
+    expectations: [
+      'Require S3 default encryption on operational buckets.',
+      'Require RDS storage encryption for instances and Aurora clusters.',
+      'Treat missing encryption visibility as a policy review item instead of silently passing.'
+    ],
+    updatedAt: ''
+  },
+  {
+    id: 'public-exposure-guardrails',
+    title: 'Public Exposure Guardrails',
+    focus: 'public-exposure',
+    description: 'Flag internet-facing resources that do not meet local hardening expectations.',
+    resourceTypes: ['Security Groups', 'Load Balancers', 'S3', 'RDS'],
+    expectations: [
+      'Block risky inbound ports from 0.0.0.0/0 and ::/0 unless explicitly reviewed.',
+      'Require WAF on internet-facing load balancers.',
+      'Expect S3 public access block and private-only RDS endpoints by default.'
+    ],
+    updatedAt: ''
+  },
+  {
+    id: 'backup-resilience',
+    title: 'Backup Resilience',
+    focus: 'backup',
+    description: 'Set minimum recovery expectations for managed databases and important buckets.',
+    resourceTypes: ['RDS', 'S3'],
+    expectations: [
+      'Require at least seven days of automated backup retention for RDS.',
+      'Require versioning on important S3 buckets that look production, audit, state, or backup related.',
+      'Surface low-retention backup posture before it becomes a recovery gap.'
+    ],
+    updatedAt: ''
+  }
+]
+
 const DEFAULT_STATE: Phase1FoundationState = {
   governanceTagDefaults: DEFAULT_GOVERNANCE_TAG_DEFAULTS,
+  compliancePolicyPacks: DEFAULT_COMPLIANCE_POLICY_PACKS,
   cloudWatchSavedQueries: [],
   cloudWatchQueryHistory: [],
   cloudWatchInvestigationHistory: [],
@@ -153,6 +211,36 @@ function sanitizeGovernanceTagDefaults(value: unknown): GovernanceTagDefaults {
   return {
     inheritByDefault: sanitizeBoolean(raw.inheritByDefault, DEFAULT_GOVERNANCE_TAG_DEFAULTS.inheritByDefault),
     values,
+    updatedAt: sanitizeString(raw.updatedAt)
+  }
+}
+
+function sanitizeCompliancePolicyPackDefinition(value: unknown): CompliancePolicyPackDefinition | null {
+  const raw = isRecord(value) ? value : null
+  if (!raw) {
+    return null
+  }
+
+  const id = sanitizeString(raw.id)
+  const title = sanitizeString(raw.title)
+  const focus = raw.focus === 'tagging-defaults' ||
+    raw.focus === 'encryption' ||
+    raw.focus === 'public-exposure' ||
+    raw.focus === 'backup'
+    ? raw.focus
+    : ''
+
+  if (!id || !title || !focus) {
+    return null
+  }
+
+  return {
+    id,
+    title,
+    focus,
+    description: sanitizeString(raw.description),
+    resourceTypes: sanitizeStringArray(raw.resourceTypes),
+    expectations: sanitizeStringArray(raw.expectations),
     updatedAt: sanitizeString(raw.updatedAt)
   }
 }
@@ -316,6 +404,11 @@ function sanitizeState(value: unknown): Phase1FoundationState {
   const raw = isRecord(value) ? value : {}
   return {
     governanceTagDefaults: sanitizeGovernanceTagDefaults(raw.governanceTagDefaults),
+    compliancePolicyPacks: Array.isArray(raw.compliancePolicyPacks) && raw.compliancePolicyPacks.length > 0
+      ? raw.compliancePolicyPacks
+        .map((entry) => sanitizeCompliancePolicyPackDefinition(entry))
+        .filter((entry): entry is CompliancePolicyPackDefinition => Boolean(entry))
+      : DEFAULT_COMPLIANCE_POLICY_PACKS,
     cloudWatchSavedQueries: Array.isArray(raw.cloudWatchSavedQueries)
       ? raw.cloudWatchSavedQueries
         .map((entry) => sanitizeCloudWatchSavedQuery(entry))
@@ -402,6 +495,10 @@ function matchesCloudWatchFilter(
 
 export function getGovernanceTagDefaults(): GovernanceTagDefaults {
   return readState().governanceTagDefaults
+}
+
+export function getCompliancePolicyPacks(): CompliancePolicyPackDefinition[] {
+  return readState().compliancePolicyPacks
 }
 
 export function updateGovernanceTagDefaults(update: GovernanceTagDefaultsUpdate): GovernanceTagDefaults {
