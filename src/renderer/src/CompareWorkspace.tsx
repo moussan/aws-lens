@@ -307,10 +307,6 @@ export function CompareWorkspace({
   const rightOnlyRows = useMemo(() => result?.groups.reduce((sum, group) => sum + group.rows.filter((row) => row.status === 'right-only').length, 0) ?? 0, [result])
   const sameRows = useMemo(() => result?.groups.reduce((sum, group) => sum + group.rows.filter((row) => row.status === 'same').length, 0) ?? 0, [result])
   const baselineDelta = useMemo(() => computeBaselineDelta(result, loadedBaseline), [loadedBaseline, result])
-  const baselineMatchesCurrent = useMemo(() => {
-    if (!activeRequest || !loadedBaseline) return false
-    return requestKey(activeRequest) === requestKey(loadedBaseline.request)
-  }, [activeRequest, loadedBaseline])
 
   function buildRequest(): ComparisonRequest | null {
     const left = options.find((option) => option.key === leftKey)
@@ -679,139 +675,116 @@ export function CompareWorkspace({
         </div>
       </section>
 
-      <section className="compare-baseline-panel">
-        <div className="compare-pane-head">
-          <div>
-            <span className="compare-pane-kicker">Saved compare presets</span>
-            <h3>Create reusable Session Hub and Compare Workspace context pairs</h3>
+      <div className="compare-management-grid">
+        <section className="compare-baseline-panel compare-baseline-panel-compact">
+          <div className="compare-pane-head">
+            <div>
+              <span className="compare-pane-kicker">Presets</span>
+              <h3>Saved context pairs</h3>
+            </div>
+            <span className="compare-pane-summary">{presets.length} saved</span>
           </div>
-          <span className="compare-pane-summary">{presets.length} saved</span>
-        </div>
-        <div className="compare-baseline-grid">
-          <label className="field">
-            <span>Saved presets</span>
-            <select value={selectedPresetId} onChange={(event) => setSelectedPresetId(event.target.value)}>
-              <option value="">Select a preset</option>
-              {presets.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.name} ({preset.leftLabel} vs {preset.rightLabel})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>Preset name</span>
-            <input
-              value={presetName}
-              onChange={(event) => setPresetName(event.target.value)}
-              placeholder="Prod vs staging roles"
-            />
-          </label>
-          <label className="field compare-baseline-description">
-            <span>Description</span>
-            <input
-              value={presetDescription}
-              onChange={(event) => setPresetDescription(event.target.value)}
-              placeholder="Optional note about this reusable compare context"
-            />
-          </label>
-        </div>
-        <div className="compare-baseline-actions">
-          <button type="button" className="tf-toolbar-btn" disabled={!selectedPresetId || presetLoading} onClick={() => void handleLoadPreset()}>
-            {presetLoading ? 'Loading...' : 'Load preset'}
-          </button>
-          <button type="button" className="tf-toolbar-btn accent" disabled={presetSaving} onClick={() => void handleSavePreset()}>
-            {presetSaving ? 'Saving...' : (loadedPreset ? 'Update preset' : 'Save current as preset')}
-          </button>
-          <button type="button" className="tf-toolbar-btn" disabled={!selectedPresetId || presetDeleting} onClick={() => void handleDeletePreset()}>
-            {presetDeleting ? 'Deleting...' : 'Delete preset'}
-          </button>
-        </div>
-        <div className="compare-baseline-meta">
-          <div className="compare-shell-meta-pill">
-            <span>Loaded preset</span>
-            <strong>{loadedPreset?.name ?? 'None'}</strong>
+          <div className="compare-inline-summary">
+            <span>{loadedPreset ? `Loaded: ${loadedPreset.name}` : 'No preset loaded'}</span>
           </div>
-          <div className="compare-shell-meta-pill">
-            <span>Preset request</span>
-            <strong>{loadedPreset ? `${loadedPreset.leftLabel} vs ${loadedPreset.rightLabel}` : 'No preset selected'}</strong>
+          <div className="compare-baseline-grid compare-baseline-grid-compact">
+            <label className="field">
+              <span>Preset</span>
+              <select value={selectedPresetId} onChange={(event) => setSelectedPresetId(event.target.value)}>
+                <option value="">Select a preset</option>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name} ({preset.leftLabel} vs {preset.rightLabel})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Name</span>
+              <input
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+                placeholder="Prod vs staging roles"
+              />
+            </label>
+            <label className="field compare-baseline-description">
+              <span>Description</span>
+              <input
+                value={presetDescription}
+                onChange={(event) => setPresetDescription(event.target.value)}
+                placeholder="Optional note"
+              />
+            </label>
           </div>
-          <div className="compare-shell-meta-pill">
-            <span>Current selectors</span>
-            <strong>{buildRequest() ? 'Ready to save or run' : 'Choose two contexts'}</strong>
+          <div className="compare-baseline-actions compare-baseline-actions-compact">
+            <button type="button" className="tf-toolbar-btn" disabled={!selectedPresetId || presetLoading} onClick={() => void handleLoadPreset()}>
+              {presetLoading ? 'Loading...' : 'Load'}
+            </button>
+            <button type="button" className="tf-toolbar-btn accent" disabled={presetSaving} onClick={() => void handleSavePreset()}>
+              {presetSaving ? 'Saving...' : loadedPreset ? 'Update' : 'Save'}
+            </button>
+            <button type="button" className="tf-toolbar-btn" disabled={!selectedPresetId || presetDeleting} onClick={() => void handleDeletePreset()}>
+              {presetDeleting ? 'Deleting...' : 'Delete'}
+            </button>
           </div>
-        </div>
-        {presetMessage && <div className="compare-baseline-message">{presetMessage}</div>}
-      </section>
+          {presetMessage && <div className="compare-baseline-message">{presetMessage}</div>}
+        </section>
 
-      <section className="compare-baseline-panel">
-        <div className="compare-pane-head">
-          <div>
-            <span className="compare-pane-kicker">Baseline snapshots</span>
-            <h3>Save, load, and inspect local compare baselines</h3>
+        <section className="compare-baseline-panel compare-baseline-panel-compact">
+          <div className="compare-pane-head">
+            <div>
+              <span className="compare-pane-kicker">Baselines</span>
+              <h3>Saved diff snapshots</h3>
+            </div>
+            <span className="compare-pane-summary">{baselines.length} saved</span>
           </div>
-          <span className="compare-pane-summary">{baselines.length} saved</span>
-        </div>
-        <div className="compare-baseline-grid">
-          <label className="field">
-            <span>Saved baselines</span>
-            <select value={selectedBaselineId} onChange={(event) => setSelectedBaselineId(event.target.value)}>
-              <option value="">Select a baseline</option>
-              {baselines.map((baseline) => (
-                <option key={baseline.id} value={baseline.id}>
-                  {baseline.name} ({baseline.leftLabel} vs {baseline.rightLabel})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>Baseline name</span>
-            <input
-              value={baselineName}
-              onChange={(event) => setBaselineName(event.target.value)}
-              placeholder="Production weekly snapshot"
-            />
-          </label>
-          <label className="field compare-baseline-description">
-            <span>Description</span>
-            <input
-              value={baselineDescription}
-              onChange={(event) => setBaselineDescription(event.target.value)}
-              placeholder="Optional note about why this snapshot was captured"
-            />
-          </label>
-        </div>
-        <div className="compare-baseline-actions">
-          <button type="button" className="tf-toolbar-btn" disabled={!selectedBaselineId || baselineLoading} onClick={() => void handleLoadBaseline()}>
-            {baselineLoading ? 'Loading...' : 'Load baseline'}
-          </button>
-          <button type="button" className="tf-toolbar-btn accent" disabled={baselineSaving || !result} onClick={() => void handleSaveBaseline()}>
-            {baselineSaving ? 'Saving...' : (loadedBaseline ? 'Update baseline' : 'Save current as baseline')}
-          </button>
-          <button type="button" className="tf-toolbar-btn" disabled={!selectedBaselineId || baselineDeleting} onClick={() => void handleDeleteBaseline()}>
-            {baselineDeleting ? 'Deleting...' : 'Delete baseline'}
-          </button>
-        </div>
-        <div className="compare-baseline-meta">
-          <div className="compare-shell-meta-pill">
-            <span>Loaded baseline</span>
-            <strong>{loadedBaseline?.name ?? 'None'}</strong>
+          <div className="compare-inline-summary">
+            <span>{loadedBaseline ? `Loaded: ${loadedBaseline.name}` : 'No baseline loaded'}</span>
+            {baselineDelta && <span>{`${baselineDelta.added} added, ${baselineDelta.changed} changed, ${baselineDelta.resolved} resolved`}</span>}
           </div>
-          <div className="compare-shell-meta-pill">
-            <span>Baseline request</span>
-            <strong>{loadedBaseline ? `${loadedBaseline.leftLabel} vs ${loadedBaseline.rightLabel}` : 'No baseline selected'}</strong>
+          <div className="compare-baseline-grid compare-baseline-grid-compact">
+            <label className="field">
+              <span>Baseline</span>
+              <select value={selectedBaselineId} onChange={(event) => setSelectedBaselineId(event.target.value)}>
+                <option value="">Select a baseline</option>
+                {baselines.map((baseline) => (
+                  <option key={baseline.id} value={baseline.id}>
+                    {baseline.name} ({baseline.leftLabel} vs {baseline.rightLabel})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Name</span>
+              <input
+                value={baselineName}
+                onChange={(event) => setBaselineName(event.target.value)}
+                placeholder="Production weekly snapshot"
+              />
+            </label>
+            <label className="field compare-baseline-description">
+              <span>Description</span>
+              <input
+                value={baselineDescription}
+                onChange={(event) => setBaselineDescription(event.target.value)}
+                placeholder="Optional note"
+              />
+            </label>
           </div>
-          <div className="compare-shell-meta-pill">
-            <span>Live match</span>
-            <strong>{loadedBaseline ? (baselineMatchesCurrent ? 'Current selectors match' : 'Selectors differ') : 'Not applicable'}</strong>
+          <div className="compare-baseline-actions compare-baseline-actions-compact">
+            <button type="button" className="tf-toolbar-btn" disabled={!selectedBaselineId || baselineLoading} onClick={() => void handleLoadBaseline()}>
+              {baselineLoading ? 'Loading...' : 'Load'}
+            </button>
+            <button type="button" className="tf-toolbar-btn accent" disabled={baselineSaving || !result} onClick={() => void handleSaveBaseline()}>
+              {baselineSaving ? 'Saving...' : loadedBaseline ? 'Update' : 'Save'}
+            </button>
+            <button type="button" className="tf-toolbar-btn" disabled={!selectedBaselineId || baselineDeleting} onClick={() => void handleDeleteBaseline()}>
+              {baselineDeleting ? 'Deleting...' : 'Delete'}
+            </button>
           </div>
-          <div className="compare-shell-meta-pill">
-            <span>Baseline delta</span>
-            <strong>{baselineDelta ? `${baselineDelta.added} added, ${baselineDelta.changed} changed, ${baselineDelta.resolved} resolved` : 'Load baseline and run diff'}</strong>
-          </div>
-        </div>
-        {baselineMessage && <div className="compare-baseline-message">{baselineMessage}</div>}
-      </section>
+          {baselineMessage && <div className="compare-baseline-message">{baselineMessage}</div>}
+        </section>
+      </div>
 
       {result ? (
         <div className="compare-main-layout">
