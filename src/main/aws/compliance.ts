@@ -16,6 +16,9 @@ import type {
   RdsInstanceDetail,
   SecretsManagerSecretSummary,
   ServiceId,
+  TerraformGovernanceCheckResult,
+  TerraformGovernanceFinding,
+  TerraformProjectListItem,
   WafWebAclSummary
 } from '@shared/types'
 import { awsClientConfig, readTags } from './client'
@@ -29,6 +32,8 @@ import { listSecurityGroups } from './securityGroups'
 import { listVpcs } from './vpc'
 import { describeWebAcl, listWebAcls } from './waf'
 import { getComplianceFindingWorkflow, getCompliancePolicyPacks, getGovernanceTagDefaults } from '../phase1FoundationStore'
+import { listProjectSummaries } from '../terraform'
+import { getGovernanceReport } from '../terraformGovernance'
 
 type Ec2InventoryItem = {
   instanceId: string
@@ -59,6 +64,7 @@ const SECURITY_GROUP_SPRAWL_THRESHOLD = 20
 const WEAK_TAGGING_RATIO_THRESHOLD = 0.35
 const MIN_TAGGING_SAMPLE_SIZE = 6
 const MIN_RDS_BACKUP_RETENTION_DAYS = 7
+const TERRAFORM_REGION_FALLBACK = 'global'
 
 const RISKY_PORTS = new Set([20, 21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 389, 443, 445, 1433, 1521, 2049, 2375, 2376, 3000, 3306, 3389, 5432, 5601, 5672, 6379, 8080, 8443, 9200, 9300, 27017])
 const GOVERNANCE_TAG_KEYS = ['Name', 'Environment', 'Owner', 'Project', 'CostCenter']
@@ -296,11 +302,167 @@ function maxSeverity(left: ComplianceSeverity, right: ComplianceSeverity): Compl
   return severityRank(left) >= severityRank(right) ? left : right
 }
 
+function complianceProfileName(connection: AwsConnection): string {
+  return connection.kind === 'assumed-role' ? connection.sourceProfile : connection.profile
+}
+
+function normalizeTerraformSeverity(
+  severity: TerraformGovernanceFinding['severity']
+): ComplianceSeverity {
+  if (severity === 'critical' || severity === 'high') {
+    return 'high'
+  }
+  if (severity === 'medium') {
+    return 'medium'
+  }
+  return 'low'
+}
+
+function terraformCheckSeverity(check: TerraformGovernanceCheckResult): ComplianceSeverity {
+  if (check.findings.length > 0) {
+    return check.findings.reduce<ComplianceSeverity>(
+      (current, finding) => maxSeverity(current, normalizeTerraformSeverity(finding.severity)),
+      'low'
+    )
+  }
+
+  if (check.status === 'error') {
+    return check.blocking ? 'high' : 'medium'
+  }
+
+  return check.blocking ? 'medium' : 'low'
+}
+
+function terraformCheckCategory(check: TerraformGovernanceCheckResult): ComplianceCategory {
+  if (check.toolId === 'tfsec' || check.toolId === 'checkov') {
+    return 'security'
+  }
+  if (check.toolId === 'validate') {
+    return 'compliance'
+  }
+  return 'operations'
+}
+
+function terraformPolicyPackIds(
+  check: TerraformGovernanceCheckResult,
+  finding?: TerraformGovernanceFinding
+): string[] | undefined {
+  const source = `${check.summary} ${finding?.ruleId ?? ''} ${finding?.message ?? ''}`.toLowerCase()
+  const packIds = new Set<string>()
+
+  if (/(tag|label|costcenter|cost center|owner|environment|project)/.test(source)) {
+    packIds.add('tagging-defaults')
+  }
+  if (/(encrypt|encryption|kms|cipher|sse|cmk)/.test(source)) {
+    packIds.add('encryption-baseline')
+  }
+  if (/(public|internet|0\.0\.0\.0\/0|::\/0|security group|ingress|exposure|exposed|open port|waf)/.test(source)) {
+    packIds.add('public-exposure-guardrails')
+  }
+  if (/(backup|retention|snapshot|recovery|versioning|restore)/.test(source)) {
+    packIds.add('backup-resilience')
+  }
+
+  return packIds.size > 0 ? [...packIds] : undefined
+}
+
+function terraformResourceId(
+  project: TerraformProjectListItem,
+  finding?: TerraformGovernanceFinding
+): string {
+  if (finding) {
+    return `${project.name}:${finding.file}:${finding.line}`
+  }
+  return project.name
+}
+
+function addTerraformGovernanceFindings(
+  findings: ComplianceFindingRecord[],
+  projects: TerraformProjectListItem[]
+): void {
+  for (const project of projects) {
+    const report = getGovernanceReport(project.id)
+    if (!report) {
+      continue
+    }
+
+    const region = project.environment.region || TERRAFORM_REGION_FALLBACK
+    const workspace = project.environment.workspaceName || project.currentWorkspace || 'default'
+
+    for (const check of report.checks) {
+      if (check.status === 'passed' || check.status === 'skipped') {
+        continue
+      }
+
+      if (check.findings.length === 0) {
+        addFinding(findings, {
+          idParts: ['compliance', 'terraform', project.id, check.toolId, check.status],
+          title: `${project.name}: ${check.label} requires review`,
+          severity: terraformCheckSeverity(check),
+          category: terraformCheckCategory(check),
+          service: 'terraform',
+          region,
+          resourceId: terraformResourceId(project),
+          description: `${check.label} returned ${check.status} for workspace ${workspace}. Summary: ${check.summary}`,
+          recommendedAction: `Review the ${check.label} output for ${project.name}, fix the underlying Terraform issue, then rerun governance checks before treating the workspace as clean.`,
+          policyPackIds: terraformPolicyPackIds(check),
+          remediation: {
+            kind: 'navigate',
+            label: 'Open Terraform',
+            serviceId: 'terraform'
+          }
+        })
+        continue
+      }
+
+      for (const finding of check.findings) {
+        addFinding(findings, {
+          idParts: ['compliance', 'terraform', project.id, check.toolId, finding.ruleId, finding.file, finding.line],
+          title: `${project.name}: ${finding.ruleId}`,
+          severity: normalizeTerraformSeverity(finding.severity),
+          category: terraformCheckCategory(check),
+          service: 'terraform',
+          region,
+          resourceId: terraformResourceId(project, finding),
+          description: `${check.label} flagged ${finding.message} in ${finding.file}:${finding.line} for workspace ${workspace}.`,
+          recommendedAction: `Update the Terraform code in ${finding.file}:${finding.line}, rerun ${check.label}, and only keep exceptions that are explicitly reviewed.`,
+          policyPackIds: terraformPolicyPackIds(check, finding),
+          remediation: {
+            kind: 'navigate',
+            label: 'Open Terraform',
+            serviceId: 'terraform'
+          }
+        })
+      }
+    }
+  }
+}
+
 function buildRemediationTemplates(finding: ComplianceFindingRecord): ComplianceRemediationTemplate[] {
   const resourceId = finding.resourceId || '<resource-id>'
   const region = finding.region
 
   switch (finding.service) {
+    case 'terraform':
+      return [{
+        id: `${finding.id}:terraform`,
+        title: 'Re-run governance checks locally',
+        summary: 'Inspect the Terraform workspace, then rerun validation and policy tooling before accepting the finding as reviewed.',
+        commands: [
+          {
+            label: 'Template fmt check',
+            command: 'terraform fmt -check -recursive'
+          },
+          {
+            label: 'Template validate',
+            command: 'terraform validate'
+          },
+          {
+            label: 'Template security scan',
+            command: 'tfsec .'
+          }
+        ]
+      }]
     case 'security-groups':
       return [{
         id: `${finding.id}:security-group`,
@@ -451,6 +613,7 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
   const region = connection.region
   const findings: ComplianceFindingRecord[] = []
   const scopeKey = complianceScopeKey(connection)
+  const profileName = complianceProfileName(connection)
   const governanceDefaults = getGovernanceTagDefaults()
   const policyPackDefinitions = getCompliancePolicyPacks()
 
@@ -891,6 +1054,20 @@ export async function getComplianceReport(connection: AwsConnection): Promise<Co
       })
     }
   }
+
+  const terraformProjects = await loadSection(
+    warnings,
+    'Terraform projects',
+    [] as TerraformProjectListItem[],
+    () => Promise.resolve(listProjectSummaries(profileName, connection))
+  )
+
+  const terraformProjectsInScope = terraformProjects.filter((project) => {
+    const projectRegion = project.environment.region?.trim()
+    return !projectRegion || projectRegion === region
+  })
+
+  addTerraformGovernanceFindings(findings, terraformProjectsInScope)
 
   findings.sort((left, right) => {
     const severityOrder: Record<ComplianceSeverity, number> = { high: 0, medium: 1, low: 2 }
