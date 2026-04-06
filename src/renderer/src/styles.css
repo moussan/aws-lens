@@ -6157,6 +6157,54 @@ button.overview-tile.clickable.active strong {
   border-radius: 10px;
 }
 
+.settings-check-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.settings-check-card {
+  padding: 0.8rem 0.9rem;
+  border-radius: 14px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.72);
+}
+
+.settings-check-card span {
+  display: block;
+  color: #8fa1b3;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-check-card strong {
+  display: block;
+  margin-top: 0.24rem;
+  color: #f3f7fc;
+  line-height: 1.4;
+}
+
+.settings-check-callout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(136, 156, 181, 0.12);
+  background: rgba(8, 14, 22, 0.72);
+}
+
+.settings-check-callout strong {
+  color: #eef5fb;
+}
+
+.settings-check-callout span {
+  color: #9fb1c4;
+  line-height: 1.45;
+}
+
 .settings-update-overview {
   display: flex;
   align-items: flex-start;
@@ -6294,6 +6342,59 @@ button.overview-tile.clickable.active strong {
   font-size: 0.75rem;
   text-align: right;
   word-break: break-word;
+}
+
+.environment-onboarding-progress {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.environment-onboarding-progress__item,
+.environment-onboarding-guidance {
+  padding: 0.85rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(143, 166, 192, 0.14);
+  background: rgba(6, 12, 19, 0.68);
+}
+
+.environment-onboarding-progress__item span {
+  display: block;
+  color: #8fa1b3;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.environment-onboarding-progress__item strong {
+  display: block;
+  margin-top: 0.22rem;
+  color: #f2f7fc;
+}
+
+.environment-onboarding-progress__item.active {
+  border-color: rgba(255, 170, 96, 0.28);
+  background: rgba(41, 24, 8, 0.42);
+}
+
+.environment-onboarding-progress__item.done {
+  border-color: rgba(104, 214, 160, 0.24);
+}
+
+.environment-onboarding-guidance {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.environment-onboarding-guidance__list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.environment-onboarding-guidance__list span {
+  color: #dbe7f3;
+  line-height: 1.45;
 }
 
 .environment-onboarding-shell {
@@ -8327,8 +8428,25 @@ textarea {
   background: rgba(10, 17, 26, 0.72);
 }
 
+.profile-catalog-empty-guided {
+  display: grid;
+  gap: 0.75rem;
+}
+
 .profile-catalog-empty p {
   margin-bottom: 0;
+}
+
+.profile-catalog-empty__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.profile-catalog-empty__checklist {
+  display: grid;
+  gap: 0.35rem;
+  color: #d8e5f2;
 }
 
 .profile-context-menu {
@@ -8428,6 +8546,11 @@ textarea {
   }
 
   .profile-catalog-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .environment-onboarding-progress,
+  .settings-check-grid {
     grid-template-columns: 1fr;
   }
 

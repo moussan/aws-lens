@@ -592,6 +592,11 @@ export function SettingsPage({
     const attentionTools = environmentHealth?.tools.filter((tool) => tool.status !== 'available') ?? []
     const readyPermissions = environmentHealth?.permissions.filter((item) => item.status === 'ok') ?? []
     const attentionPermissions = environmentHealth?.permissions.filter((item) => item.status !== 'ok') ?? []
+    const readyCheckCount = readyTools.length + readyPermissions.length
+    const attentionCheckCount = attentionTools.length + attentionPermissions.length
+    const diagnosticsNextStep = attentionPermissions[0]?.remediation
+      || attentionTools[0]?.remediation
+      || 'Machine checks look healthy. Export a diagnostics bundle only when you need to share workstation context or support state.'
 
     return (
       <>
@@ -656,11 +661,32 @@ export function SettingsPage({
           <SettingRow label="Detected CLI" description={toolchainInfo?.found ? `Path: ${toolchainInfo.path || 'resolved by runtime'}` : (toolchainInfo?.error || 'No CLI detected yet.')}>
             <div className="settings-static-value">{toolchainSummary}</div>
           </SettingRow>
-          <SettingRow label="Machine validation" description={environmentHealth?.summary ?? 'Run a rescan to refresh tool and permission state.'}>
+          <div className="settings-check-grid">
+            <div className="settings-check-card">
+              <span>Ready</span>
+              <strong>{readyCheckCount}</strong>
+            </div>
+            <div className="settings-check-card">
+              <span>Needs attention</span>
+              <strong>{attentionCheckCount}</strong>
+            </div>
+            <div className="settings-check-card">
+              <span>Last checked</span>
+              <strong>{environmentHealth?.checkedAt ? new Date(environmentHealth.checkedAt).toLocaleTimeString() : environmentBusy ? 'Running now' : 'Not checked yet'}</strong>
+            </div>
+          </div>
+          <div className="settings-check-callout">
+            <strong>{environmentHealth?.summary ?? 'Run a rescan to refresh tool and permission state.'}</strong>
+            <span>{diagnosticsNextStep}</span>
+          </div>
+          <div className="settings-action-row">
             <button type="button" className="accent" disabled={environmentBusy} onClick={onRefreshEnvironment}>
               {environmentBusy ? 'Refreshing...' : 'Rescan environment'}
             </button>
-          </SettingRow>
+            <button type="button" disabled={enterpriseBusy} onClick={onDiagnosticsExport}>
+              Diagnostics bundle
+            </button>
+          </div>
           {environmentHealth && (
             <div className="environment-onboarding-grid">
               <section className="environment-onboarding-section">

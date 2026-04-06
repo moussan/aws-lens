@@ -110,6 +110,12 @@ type EnvironmentOnboardingState = {
 type FocusMap = Partial<Record<NavigationFocus['service'], TokenizedFocus>>
 const NAV_HIDDEN_SERVICE_IDS = new Set<ServiceId>(['overview', 'session-hub', 'compare'])
 const ENVIRONMENT_ONBOARDING_STEPS: EnvironmentOnboardingStep[] = ['profile', 'region', 'tooling', 'access']
+const ENVIRONMENT_ONBOARDING_STEP_LABELS: Record<EnvironmentOnboardingStep, string> = {
+  profile: 'Profile',
+  region: 'Region',
+  tooling: 'Tooling',
+  access: 'Access mode'
+}
 
 const SERVICE_CATEGORY_ORDER = [
   'Infrastructure',
@@ -906,6 +912,11 @@ export function App() {
   const onboardingStepIndex = ENVIRONMENT_ONBOARDING_STEPS.indexOf(environmentOnboardingStep)
   const onboardingBackEnabled = onboardingStepIndex > 0
   const onboardingNextLabel = onboardingStepIndex === ENVIRONMENT_ONBOARDING_STEPS.length - 1 ? 'Finish onboarding' : 'Next step'
+  const onboardingProgress = ENVIRONMENT_ONBOARDING_STEPS.map((step, index) => ({
+    step,
+    label: ENVIRONMENT_ONBOARDING_STEP_LABELS[step],
+    status: index < onboardingStepIndex ? 'done' : index === onboardingStepIndex ? 'active' : 'pending'
+  }))
 
   function togglePinnedService(serviceId: ServiceId) {
     setPinnedServiceIds((current) =>
@@ -1521,6 +1532,12 @@ export function App() {
     setEnvironmentOnboardingStepSafe(previousStep)
   }
 
+  function openManualCredentialsFlowFromOnboarding(): void {
+    setCredError('')
+    setFabMode('credentials')
+    dismissEnvironmentOnboarding('profiles')
+  }
+
   let onboardingTitle = 'Connect a profile before you explore AWS workflows.'
   let onboardingDescription = 'AWS Lens keeps one active account and region context across the shell, service consoles, and embedded terminal.'
   let onboardingSummary = `Detected ${connectionState.profiles.length} local AWS profile${connectionState.profiles.length === 1 ? '' : 's'}. ${connectionState.selectedProfile?.name ? `Current selection: ${connectionState.selectedProfile.name}.` : 'No profile is selected yet.'}`
@@ -1529,6 +1546,11 @@ export function App() {
   let onboardingSecondaryActionLabel = 'Continue here'
   let onboardingSecondaryAction: (() => void) | null = null
   let onboardingDetailContent: React.ReactNode = null
+  let onboardingGuidance: string[] = [
+    'Choose or create a profile so the shell has one AWS account context.',
+    'Confirm the default region and startup screen before you spread across services.',
+    'Run environment checks before terminal-backed or Terraform actions.'
+  ]
 
   if (environmentOnboardingStep === 'region') {
     onboardingTitle = 'Confirm the region and launch defaults for this workspace.'
@@ -1538,6 +1560,11 @@ export function App() {
     onboardingPrimaryAction = () => dismissEnvironmentOnboarding('settings')
     onboardingSecondaryActionLabel = 'Go to overview'
     onboardingSecondaryAction = connectionState.connected ? () => setScreen('overview') : null
+    onboardingGuidance = [
+      'Pick the region you inspect most often so the shell opens in the right scope.',
+      'Use startup defaults if operators share this workstation.',
+      'Go to Overview only after profile and region look correct.'
+    ]
     onboardingDetailContent = (
       <div className="environment-onboarding-grid">
         <section className="environment-onboarding-section">
@@ -1571,6 +1598,11 @@ export function App() {
     onboardingPrimaryAction = environmentBusy ? null : () => void handleRefreshEnvironmentHealth()
     onboardingSecondaryActionLabel = 'Open settings'
     onboardingSecondaryAction = () => dismissEnvironmentOnboarding('settings')
+    onboardingGuidance = [
+      'Resolve missing CLIs before you rely on terminal handoff or Terraform operations.',
+      'Fix permission failures for local state, diagnostics, and helper outputs early.',
+      'Open Settings if you need path overrides or a full machine check view.'
+    ]
     onboardingDetailContent = (
       <div className="environment-onboarding-grid">
         <section className="environment-onboarding-section">
@@ -1627,6 +1659,11 @@ export function App() {
     onboardingPrimaryAction = () => dismissEnvironmentOnboarding('settings')
     onboardingSecondaryActionLabel = 'Open session hub'
     onboardingSecondaryAction = connectionState.connected ? () => setScreen('session-hub') : null
+    onboardingGuidance = [
+      'Stay in read-only mode until profile, tooling, and diagnostics all look healthy.',
+      'Use operator mode only when you intend to mutate infrastructure or run commands.',
+      'Security settings are the right place for audit export and diagnostics bundle review.'
+    ]
     onboardingDetailContent = (
       <div className="environment-onboarding-grid">
         <section className="environment-onboarding-section">
@@ -1657,6 +1694,24 @@ export function App() {
       </div>
     )
   } else {
+    if (connectionState.profiles.length === 0) {
+      onboardingTitle = 'Load or create a profile before you explore AWS workflows.'
+      onboardingDescription = 'AWS Lens needs one local AWS profile or vault credential before overview, service consoles, Session Hub, and direct access can share a common context.'
+      onboardingSummary = 'No local AWS profiles were detected yet. Import your AWS config or save credentials into the encrypted local vault to create the first operator context.'
+      onboardingPrimaryActionLabel = 'Import AWS config'
+      onboardingPrimaryAction = () => {
+        dismissEnvironmentOnboarding('profiles')
+        void handleLoadAwsConfig()
+      }
+      onboardingSecondaryActionLabel = 'Add credentials'
+      onboardingSecondaryAction = () => openManualCredentialsFlowFromOnboarding()
+      onboardingGuidance = [
+        'Import existing ~/.aws config when you already have named workstation profiles.',
+        'Use vault-backed credentials when you want the app to store them locally and encrypted.',
+        'After the first profile is loaded, pin frequent accounts so switching is faster.'
+      ]
+    }
+
     onboardingDetailContent = (
       <div className="environment-onboarding-grid">
         <section className="environment-onboarding-section">
@@ -1668,6 +1723,15 @@ export function App() {
             </div>
             <div className="settings-environment-meta">
               <code>{connectionState.profiles.length} discovered</code>
+            </div>
+          </div>
+          <div className="settings-environment-row">
+            <div>
+              <strong>First-run paths</strong>
+              <p>{connectionState.profiles.length > 0 ? 'Your catalog already has profiles to choose from. If you need more, import the AWS config file or add a vault-backed credential from the catalog.' : 'No profile inventory is available yet. Start by importing the local AWS config file or by creating a vault-backed credential inside the catalog.'}</p>
+            </div>
+            <div className="settings-environment-meta">
+              <span className={`settings-status-pill settings-status-pill-${connectionState.profiles.length > 0 ? 'stable' : 'unknown'}`}>{connectionState.profiles.length > 0 ? 'ready' : 'pending'}</span>
             </div>
           </div>
           <div className="settings-environment-row">
@@ -1698,7 +1762,7 @@ export function App() {
 
     if (targetScreen === 'profiles') {
       return (
-        <section className="profile-catalog-shell">
+      <section className="profile-catalog-shell">
           <div className="profile-catalog-hero">
             <div className="profile-catalog-hero-copy">
               <div className="eyebrow">Profile Catalog</div>
@@ -1781,6 +1845,25 @@ export function App() {
                   </div>
                 </div>
               ))
+            ) : connectionState.profiles.length === 0 && !profileSearch.trim() ? (
+              <div className="profile-catalog-empty profile-catalog-empty-guided">
+                <div className="eyebrow">First profile</div>
+                <h3>No AWS profiles are loaded yet</h3>
+                <p className="hero-path">Import an existing AWS config file or save credentials into the encrypted local vault to create the first operator context.</p>
+                <div className="profile-catalog-empty__actions">
+                  <button type="button" className="accent" onClick={() => void handleLoadAwsConfig()}>
+                    Import AWS config
+                  </button>
+                  <button type="button" onClick={() => { setCredError(''); setFabMode('credentials') }}>
+                    Add credentials manually
+                  </button>
+                </div>
+                <div className="profile-catalog-empty__checklist">
+                  <span>1. Load one profile or vault credential.</span>
+                  <span>2. Select it as the base workspace context.</span>
+                  <span>3. Pin frequent accounts so future switches stay in the left rail.</span>
+                </div>
+              </div>
             ) : (
               <div className="profile-catalog-empty">
                 <div className="eyebrow">No Matches</div>
@@ -2203,6 +2286,24 @@ export function App() {
                 <strong>{onboardingSummary}</strong>
                 <span>Environment: {environmentHealth?.overallSeverity ?? (environmentBusy ? 'checking' : 'idle')}</span>
                 <span>Checked: {environmentHealth?.checkedAt ? new Date(environmentHealth.checkedAt).toLocaleString() : environmentBusy ? 'Running now' : 'Not checked yet'}</span>
+              </div>
+
+              <div className="environment-onboarding-progress" aria-label="First-run progress">
+                {onboardingProgress.map((item) => (
+                  <div key={item.step} className={`environment-onboarding-progress__item ${item.status}`}>
+                    <span>{item.label}</span>
+                    <strong>{item.status === 'done' ? 'Done' : item.status === 'active' ? 'Current' : 'Pending'}</strong>
+                  </div>
+                ))}
+              </div>
+
+              <div className="environment-onboarding-guidance">
+                <div className="eyebrow">Recommended next moves</div>
+                <div className="environment-onboarding-guidance__list">
+                  {onboardingGuidance.map((item) => (
+                    <span key={item}>{item}</span>
+                  ))}
+                </div>
               </div>
 
               {onboardingDetailContent}
