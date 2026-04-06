@@ -336,10 +336,11 @@ export function OverviewConsole({
     return tagResults.resources.filter((resource) => resource.resourceType === tagResourceTypeFilter)
   }, [tagResults, tagResourceTypeFilter])
 
-  const displayedMonthlyCost = costBreakdown?.total ?? metrics?.globalTotals.totalCost ?? globalMetrics?.globalTotals.totalCost ?? 0
+  const displayedMonthlyCost = costBreakdown?.total ?? null
+  const displayedMonthlyCostLabel = displayedMonthlyCost == null ? '-' : fmtCurrency(displayedMonthlyCost)
   const displayedCostDetail = costBreakdown
-    ? `${costBreakdown.period} · Cost Explorer · Unblended cost`
-    : 'Estimated from resource heuristics'
+    ? `${costBreakdown.period} · Cost Explorer · ${costBreakdown.metric}`
+    : 'Cost Explorer unavailable'
 
   const content = (
     <>
@@ -407,7 +408,7 @@ export function OverviewConsole({
                     className="overview-service-chip"
                     style={{ cursor: 'default', borderColor: 'rgba(223, 105, 42, 0.2)' }}
                   >
-                    <span style={{ color: 'var(--accent)' }}>{fmtCurrency(displayedMonthlyCost)}</span>
+                    <span style={{ color: 'var(--accent)' }}>{displayedMonthlyCostLabel}</span>
                     <strong>Cost</strong>
                   </button>
                   {SERVICE_TILES.map((tile) => {
@@ -485,7 +486,7 @@ export function OverviewConsole({
                         <div className="overview-meta-strip">
                           <div className="overview-meta-pill">
                             <span>Monthly cost</span>
-                            <strong>{fmtCurrency(displayedMonthlyCost)}</strong>
+                            <strong>{displayedMonthlyCostLabel}</strong>
                           </div>
                           <div className="overview-meta-pill">
                             <span>Active regions</span>
@@ -500,7 +501,7 @@ export function OverviewConsole({
                       <div className="overview-hero-stats">
                         <div className="overview-glance-card overview-glance-card-accent">
                           <span>Cost posture</span>
-                          <strong>{fmtCurrency(displayedMonthlyCost)}</strong>
+                          <strong>{displayedMonthlyCostLabel}</strong>
                           <small>{displayedCostDetail}</small>
                         </div>
                         <div className="overview-glance-card">
@@ -709,7 +710,7 @@ export function OverviewConsole({
                     <section className="overview-tiles overview-tiles-summary">
                       <div className="overview-tile highlight">
                         <span className="overview-tile-kicker">Spend</span>
-                        <strong>{fmtCurrency(displayedMonthlyCost)}</strong>
+                        <strong>{displayedMonthlyCostLabel}</strong>
                         <span>Total Monthly Cost</span>
                       </div>
                       <div className="overview-tile">
@@ -742,7 +743,7 @@ export function OverviewConsole({
 
                   <div className="overview-bottom-row">
                     <span>Current month total</span>
-                    <strong>{fmtCurrency(displayedMonthlyCost)} USD</strong>
+                    <strong>{displayedMonthlyCost == null ? '-' : `${displayedMonthlyCostLabel} USD`}</strong>
                     <span className="overview-bottom-row-detail">{displayedCostDetail}</span>
                   </div>
 
@@ -1033,22 +1034,24 @@ export function OverviewConsole({
 
             const allInsights = statistics?.insights ?? []
             const allSignals = statistics?.signals ?? []
-            const allStats = (statistics?.stats ?? []).map((stat) => {
-              if (stat.label !== 'Est. Monthly Cost') return stat
-              if (costBreakdown) {
-                return {
+              const allStats = (statistics?.stats ?? []).map((stat) => {
+                if (stat.label !== 'Est. Monthly Cost') return stat
+                if (costBreakdown) {
+                  return {
                   ...stat,
                   label: 'Monthly Cost',
                   value: fmtCurrency(costBreakdown.total),
-                  detail: `Current month (${costBreakdown.period}) from Cost Explorer using Unblended cost`
+                  detail: `Current month (${costBreakdown.period}) from Cost Explorer using ${costBreakdown.metric}`
                 }
               }
 
-              return {
-                ...stat,
-                detail: 'Estimated from resource heuristics'
-              }
-            })
+                return {
+                  ...stat,
+                  label: 'Monthly Cost',
+                  value: '-',
+                  detail: 'Cost Explorer unavailable'
+                }
+              })
 
             const infoCount = allInsights.filter((i) => i.severity === 'info').length
             const warningCount = allInsights.filter((i) => i.severity === 'warning').length

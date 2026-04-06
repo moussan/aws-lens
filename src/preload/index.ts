@@ -34,6 +34,7 @@ import type {
   EcsFargateServiceConfig,
   LambdaCreateConfig,
   Route53HostedZoneCreateInput,
+  TerraformAdoptionTarget,
   SsmSendCommandRequest,
   SsmStartSessionRequest,
   SnapshotLaunchConfig,
@@ -719,6 +720,16 @@ const api = {
     ipcRenderer.invoke('terraform:drift:get', profileName, projectId, connection, options),
   getObservabilityReport: (profileName: string, projectId: string, connection: AwsConnection) =>
     ipcRenderer.invoke('terraform:observability-report:get', profileName, projectId, connection),
+  detectAdoption: (profileName: string, connection: AwsConnection | undefined, target: TerraformAdoptionTarget) =>
+    ipcRenderer.invoke('terraform:adoption:detect', profileName, connection, target),
+  mapAdoption: (profileName: string, projectId: string, connection: AwsConnection | undefined, target: TerraformAdoptionTarget) =>
+    ipcRenderer.invoke('terraform:adoption:map', profileName, projectId, connection, target),
+  generateAdoptionCode: (profileName: string, projectId: string, connection: AwsConnection | undefined, target: TerraformAdoptionTarget) =>
+    ipcRenderer.invoke('terraform:adoption:codegen', profileName, projectId, connection, target),
+  executeAdoptionImport: (profileName: string, projectId: string, connection: AwsConnection | undefined, target: TerraformAdoptionTarget) =>
+    ipcRenderer.invoke('terraform:adoption:execute-import', profileName, projectId, connection, target),
+  validateAdoptionImport: (profileName: string, projectId: string, connection: AwsConnection | undefined, target: TerraformAdoptionTarget) =>
+    ipcRenderer.invoke('terraform:adoption:validate', profileName, projectId, connection, target),
   chooseProjectDirectory: () => ipcRenderer.invoke('terraform:projects:choose-directory'),
   chooseVarFile: () => ipcRenderer.invoke('terraform:projects:choose-file'),
   addProject: (profileName: string, rootPath: string, connection?: AwsConnection) => ipcRenderer.invoke('terraform:projects:add', profileName, rootPath, connection),

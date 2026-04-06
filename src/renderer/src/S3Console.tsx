@@ -9,7 +9,8 @@ import type {
   S3BucketSummary,
   S3GovernanceOverview,
   S3GovernanceSeverity,
-  S3ObjectSummary
+  S3ObjectSummary,
+  TerraformAdoptionTarget
 } from '@shared/types'
 import {
   createS3Bucket,
@@ -31,6 +32,7 @@ import {
   uploadS3Object
 } from './api'
 import { ConfirmButton } from './ConfirmButton'
+import { TerraformAdoptionDialog } from './TerraformAdoptionDialog'
 
 const TEXT_EXTENSIONS = new Set(['txt', 'json', 'xml', 'csv', 'yaml', 'yml', 'md', 'html', 'htm', 'css', 'js', 'ts', 'jsx', 'tsx', 'py', 'rb', 'sh', 'bash', 'env', 'conf', 'cfg', 'ini', 'toml', 'log', 'sql', 'graphql', 'svg', 'tf', 'tfvars', 'tfstate', 'hcl', 'dockerfile', 'makefile', 'gitignore'])
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'svg'])
@@ -345,6 +347,7 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
   const [selectedSummaryFilter, setSelectedSummaryFilter] = useState<SummaryFilterKey | null>(null)
   const [activeBucketAction, setActiveBucketAction] = useState('')
   const [remediationFeedback, setRemediationFeedback] = useState<RemediationFeedback | null>(null)
+  const [showTerraformAdoption, setShowTerraformAdoption] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const bucketPostureMap = useMemo(() => new Map((governanceOverview?.buckets ?? []).map((bucket) => [bucket.bucketName, bucket])), [governanceOverview])
@@ -729,6 +732,18 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
 
   const activeObjCols = OBJ_COLUMNS.filter((column) => visibleObjCols.has(column.key))
   const selectedBucketSummary = buckets.find((bucket) => bucket.name === selectedBucket) ?? null
+  const adoptionTarget: TerraformAdoptionTarget | null = selectedBucketSummary
+    ? {
+        serviceId: 's3',
+        resourceType: 'aws_s3_bucket',
+        region: selectedBucketSummary.region || connection.region,
+        displayName: selectedBucketSummary.name,
+        identifier: selectedBucketSummary.name,
+        arn: `arn:aws:s3:::${selectedBucketSummary.name}`,
+        name: selectedBucketSummary.name,
+        tags: selectedBucketSummary.tags
+      }
+    : null
   const selectedBucketTone = severityTone(selectedPosture?.highestSeverity ?? null)
   const selectedFolderCount = objects.filter((obj) => obj.isFolder).length
   const bucketCount = governanceOverview?.summary.bucketCount ?? buckets.length
@@ -905,6 +920,7 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
         <div className="s3-toolbar">
           <button className="s3-btn" type="button" onClick={() => void refreshAll()} disabled={loading || governanceLoading}>Refresh</button>
           <button className={`s3-btn ${selectedTab === 'governance' ? 'accent' : ''}`} type="button" onClick={() => setSelectedTab('governance')} disabled={!selectedBucket}>Open Governance</button>
+          <button className="s3-btn" type="button" onClick={() => setShowTerraformAdoption(true)} disabled={!selectedBucketSummary}>Manage in Terraform</button>
           <button className="s3-btn" type="button" onClick={goUp} disabled={!prefix || selectedTab !== 'objects'}>Go Up</button>
           <button className="s3-btn" type="button" onClick={() => void openS3Object(resolveBucketConnection(connection, buckets, selectedBucket), selectedBucket, selectedKey)} disabled={!selectedKey || !!selectedObj?.isFolder || selectedTab !== 'objects'}>Open / Preview</button>
         </div>
@@ -1552,6 +1568,12 @@ export function S3Console({ connection }: { connection: AwsConnection }) {
           )}
         </div>
       </div>
+      <TerraformAdoptionDialog
+        open={showTerraformAdoption}
+        onClose={() => setShowTerraformAdoption(false)}
+        connection={connection}
+        target={adoptionTarget}
+      />
     </div>
   )
 }
