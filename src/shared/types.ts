@@ -1264,9 +1264,9 @@ export type VaultEntryKind =
 
 export type VaultOrigin =
   | 'manual'
-  | 'imported-file'
+  | 'imported'
   | 'aws-secrets-manager'
-  | 'aws-iam'
+  | 'aws-ssm'
   | 'generated'
   | 'unknown'
 
