@@ -254,9 +254,25 @@ export type CacheTag =
   | 'kms'
   | 'waf'
 
+type CacheSource = 'live' | 'local'
+
 type CacheEntry = {
   status: 'pending' | 'resolved'
   value: Promise<unknown> | unknown
+  fetchedAt: number | null
+  source: CacheSource | null
+}
+
+type CachedQuerySnapshot<T> = {
+  value: T | null
+  fetchedAt: number | null
+  source: CacheSource | null
+}
+
+type LocalReadonlyCacheEntry = {
+  version: 1
+  fetchedAt: number
+  value: unknown
 }
 
 const awsActivityListeners = new Set<(state: AwsActivityState) => void>()
@@ -264,6 +280,9 @@ const enterpriseListeners = new Set<(settings: EnterpriseSettings) => void>()
 const awsBridgeCache = new WeakMap<AwsLensBridge, AwsLensBridge>()
 const pageCache = new Map<string, CacheEntry>()
 let pageCacheVersion = 0
+const LOCAL_READONLY_CACHE_PREFIX = 'aws-lens:readonly-cache:v1:'
+const LOCAL_READONLY_CACHE_VERSION = 1
+const LOCAL_READONLY_CACHE_MAX_BYTES = 900_000
 let awsActivityState: AwsActivityState = {
   pendingCount: 0,
   lastCompletedAt: null
@@ -598,6 +617,15 @@ const BACKGROUND_METHODS = new Set<keyof AwsLensBridge>([
   'getEc2Recommendations'
 ])
 
+const LOCAL_READONLY_CACHE_METHODS = new Set<keyof AwsLensBridge>([
+  'getOverviewMetrics',
+  'getOverviewStatistics',
+  'getOverviewAccountContext',
+  'getRelationshipMap',
+  'getCostBreakdown',
+  'listLoadBalancerWorkspaces'
+])
+
 function notifyAwsActivity(): void {
   for (const listener of awsActivityListeners) {
     listener(awsActivityState)
@@ -640,13 +668,152 @@ function getEnterpriseSettingsState(): EnterpriseSettings {
   return enterpriseSettingsState
 }
 
-function cacheKey(tag: CacheTag, method: string, args: unknown[]): string {
-  return `${tag}:${method}:${JSON.stringify(args)}`
+function normalizeCacheArg(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeCacheArg(entry))
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value
+  }
+
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.kind === 'string' && typeof candidate.profile === 'string' && typeof candidate.region === 'string') {
+    if (candidate.kind === 'profile') {
+      return {
+        kind: candidate.kind,
+        profile: candidate.profile,
+        region: candidate.region
+      }
+    }
+
+    return {
+      kind: candidate.kind,
+      profile: candidate.profile,
+      sourceProfile: typeof candidate.sourceProfile === 'string' ? candidate.sourceProfile : null,
+      region: candidate.region,
+      roleArn: typeof candidate.roleArn === 'string' ? candidate.roleArn : null,
+      accountId: typeof candidate.accountId === 'string' ? candidate.accountId : null,
+      externalId: typeof candidate.externalId === 'string' ? candidate.externalId : null
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, normalizeCacheArg(entry)])
+  )
 }
 
-function readCached<T>(tag: CacheTag, method: string, args: unknown[], loader: () => Promise<T>): Promise<T> {
+function cacheKey(tag: CacheTag, method: string, args: unknown[]): string {
+  return `${tag}:${method}:${JSON.stringify(normalizeCacheArg(args))}`
+}
+
+function isWrappedResult(value: unknown): value is Wrapped<unknown> {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    'ok' in (value as Record<string, unknown>) &&
+    typeof (value as { ok?: unknown }).ok === 'boolean'
+  )
+}
+
+function extractSnapshotValue<T>(value: unknown): T | null {
+  if (isWrappedResult(value)) {
+    return value.ok ? (value.data as T) : null
+  }
+
+  return value as T
+}
+
+function localReadonlyCacheKey(key: string): string {
+  return `${LOCAL_READONLY_CACHE_PREFIX}${key}`
+}
+
+function supportsLocalReadonlyCache(method: keyof AwsLensBridge): boolean {
+  return LOCAL_READONLY_CACHE_METHODS.has(method)
+}
+
+function readLocalReadonlyCache<T>(key: string): CachedQuerySnapshot<T> {
+  try {
+    const raw = window.localStorage.getItem(localReadonlyCacheKey(key))
+    if (!raw) {
+      return { value: null, fetchedAt: null, source: null }
+    }
+
+    const parsed = JSON.parse(raw) as Partial<LocalReadonlyCacheEntry>
+    if (
+      parsed.version !== LOCAL_READONLY_CACHE_VERSION ||
+      typeof parsed.fetchedAt !== 'number' ||
+      !('value' in parsed)
+    ) {
+      return { value: null, fetchedAt: null, source: null }
+    }
+
+    return {
+      value: parsed.value as T,
+      fetchedAt: parsed.fetchedAt,
+      source: 'local'
+    }
+  } catch {
+    return { value: null, fetchedAt: null, source: null }
+  }
+}
+
+function persistLocalReadonlyCache(method: keyof AwsLensBridge, key: string, value: unknown, fetchedAt: number): void {
+  if (!supportsLocalReadonlyCache(method)) {
+    return
+  }
+
+  try {
+    const payload = JSON.stringify({
+      version: LOCAL_READONLY_CACHE_VERSION,
+      fetchedAt,
+      value
+    } satisfies LocalReadonlyCacheEntry)
+
+    if (payload.length > LOCAL_READONLY_CACHE_MAX_BYTES) {
+      window.localStorage.removeItem(localReadonlyCacheKey(key))
+      return
+    }
+
+    window.localStorage.setItem(localReadonlyCacheKey(key), payload)
+  } catch {
+    // Ignore local cache persistence failures.
+  }
+}
+
+export function getCachedQuerySnapshot<T>(tag: CacheTag, method: string, args: unknown[]): CachedQuerySnapshot<T> {
   const key = cacheKey(tag, method, args)
   const cached = pageCache.get(key)
+
+  if (cached?.status === 'resolved') {
+    const snapshotValue = extractSnapshotValue<T>(cached.value)
+    if (snapshotValue === null) {
+      return { value: null, fetchedAt: null, source: null }
+    }
+
+    return {
+      value: snapshotValue,
+      fetchedAt: cached.fetchedAt,
+      source: cached.source
+    }
+  }
+
+  const localSnapshot = readLocalReadonlyCache<unknown>(key)
+  const snapshotValue = extractSnapshotValue<T>(localSnapshot.value)
+
+  return {
+    value: snapshotValue,
+    fetchedAt: snapshotValue === null ? null : localSnapshot.fetchedAt,
+    source: snapshotValue === null ? null : localSnapshot.source
+  }
+}
+
+function readCached<T>(tag: CacheTag, method: keyof AwsLensBridge, args: unknown[], loader: () => Promise<T>): Promise<T> {
+  const key = cacheKey(tag, method, args)
+  const cached = pageCache.get(key)
+  const localSnapshot = readLocalReadonlyCache<T>(key)
 
   if (cached) {
     return Promise.resolve(cached.value as T)
@@ -655,19 +822,45 @@ function readCached<T>(tag: CacheTag, method: string, args: unknown[], loader: (
   const cacheVersionAtLoad = pageCacheVersion
   const pending = loader()
     .then((result) => {
-      if (pageCacheVersion === cacheVersionAtLoad) {
-        pageCache.set(key, { status: 'resolved', value: result })
+      if (isWrappedResult(result) && !result.ok) {
+        if (pageCacheVersion === cacheVersionAtLoad) {
+          pageCache.delete(key)
+        }
+        return result
       }
+
+      const fetchedAt = Date.now()
+      if (pageCacheVersion === cacheVersionAtLoad) {
+        pageCache.set(key, { status: 'resolved', value: result, fetchedAt, source: 'live' })
+      }
+      persistLocalReadonlyCache(method, key, result, fetchedAt)
       return result
     })
     .catch((error) => {
+      if (localSnapshot.value !== null) {
+        if (pageCacheVersion === cacheVersionAtLoad) {
+          pageCache.set(key, {
+            status: 'resolved',
+            value: localSnapshot.value,
+            fetchedAt: localSnapshot.fetchedAt,
+            source: localSnapshot.source
+          })
+        }
+        return localSnapshot.value
+      }
+
       if (pageCacheVersion === cacheVersionAtLoad) {
         pageCache.delete(key)
       }
       throw error
     })
 
-  pageCache.set(key, { status: 'pending', value: pending })
+  pageCache.set(key, {
+    status: 'pending',
+    value: pending,
+    fetchedAt: localSnapshot.fetchedAt,
+    source: localSnapshot.source
+  })
   return pending
 }
 
@@ -734,7 +927,7 @@ function awsBridge(): AwsLensBridge {
           })
         }
 
-        return readCached(tag, key, args, loader)
+        return readCached(tag, method, args, loader)
       }
     } else {
       ;(wrapper as Record<string, unknown>)[key] = value
