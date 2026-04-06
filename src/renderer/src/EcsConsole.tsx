@@ -12,7 +12,8 @@ import type {
   EcsServiceSummary,
   GeneratedArtifact,
   ObservabilityPostureReport,
-  ServiceId
+  ServiceId,
+  TerraformAdoptionTarget
 } from '@shared/types'
 import {
   forceEcsRedeploy,
@@ -26,6 +27,7 @@ import {
 } from './api'
 import { ConfirmButton } from './ConfirmButton'
 import { ObservabilityResilienceLab } from './ObservabilityResilienceLab'
+import { TerraformAdoptionDialog } from './TerraformAdoptionDialog'
 import { FreshnessIndicator, useFreshnessState } from './freshness'
 
 type MainTab = 'services' | 'tasks' | 'lab'
@@ -187,6 +189,7 @@ export function EcsConsole({
   const [logStatus, setLogStatus] = useState('')
   const [desiredCount, setDesiredCount] = useState('1')
   const [appliedFocusToken, setAppliedFocusToken] = useState(0)
+  const [showTerraformAdoption, setShowTerraformAdoption] = useState(false)
   const [labReport, setLabReport] = useState<ObservabilityPostureReport | null>(null)
   const [labLoading, setLabLoading] = useState(false)
   const [labError, setLabError] = useState('')
@@ -279,6 +282,19 @@ export function EcsConsole({
   const indicatorsTone = summarizeIndicators(diagnostics?.indicators ?? [])
   const availableServiceCount = services.filter((service) => service.status === 'ACTIVE').length
   const serviceSummaryTiles = diagnostics?.summaryTiles ?? []
+  const adoptionTarget: TerraformAdoptionTarget | null = selectedServiceSummary
+    ? {
+        serviceId: 'ecs',
+        resourceType: 'aws_ecs_service',
+        region: connection.region,
+        displayName: selectedServiceSummary.serviceName,
+        identifier: selectedCluster?.clusterName
+          ? `${selectedCluster.clusterName}/${selectedServiceSummary.serviceName}`
+          : selectedServiceSummary.serviceArn,
+        arn: selectedServiceSummary.serviceArn,
+        name: selectedServiceSummary.serviceName
+      }
+    : null
 
   async function load(
     clusterArn?: string,
@@ -625,6 +641,14 @@ export function EcsConsole({
           )}
           <button className="ecs-toolbar-btn accent" type="button" onClick={() => void load(selectedClusterArn, selectedServiceName, 'manual')}>
             Refresh
+          </button>
+          <button
+            className="ecs-toolbar-btn"
+            type="button"
+            onClick={() => setShowTerraformAdoption(true)}
+            disabled={!selectedServiceSummary}
+          >
+            Manage in Terraform
           </button>
         </div>
 
@@ -1239,6 +1263,12 @@ export function EcsConsole({
           )}
         </div>
       </div>
+      <TerraformAdoptionDialog
+        open={showTerraformAdoption}
+        onClose={() => setShowTerraformAdoption(false)}
+        connection={connection}
+        target={adoptionTarget}
+      />
     </div>
   )
 }

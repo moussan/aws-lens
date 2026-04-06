@@ -3918,7 +3918,24 @@ export type TerraformProjectListItem = Pick<
   'id' | 'name' | 'rootPath' | 'status' | 'stateSource' | 'metadata' | 'lastPlanSummary' | 'lastCommandAt' | 'inventory' | 'environment' | 'currentWorkspace'
 >
 
-export type TerraformAdoptionResourceType = 'aws_instance'
+export type TerraformAdoptionResourceType =
+  | 'aws_instance'
+  | 'aws_db_instance'
+  | 'aws_rds_cluster'
+  | 'aws_s3_bucket'
+  | 'aws_iam_user'
+  | 'aws_iam_group'
+  | 'aws_iam_role'
+  | 'aws_iam_policy'
+  | 'aws_security_group'
+  | 'aws_eks_cluster'
+  | 'aws_ecs_service'
+  | 'aws_lambda_function'
+  | 'aws_route53_zone'
+  | 'aws_secretsmanager_secret'
+  | 'aws_kms_key'
+  | 'aws_sqs_queue'
+  | 'aws_sns_topic'
 
 export type TerraformAdoptionTarget = {
   serviceId: ServiceId

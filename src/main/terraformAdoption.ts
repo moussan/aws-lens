@@ -19,7 +19,23 @@ type SearchHint = {
 }
 
 const SUPPORTED_STATE_TYPES: Record<TerraformAdoptionTarget['resourceType'], string[]> = {
-  aws_instance: ['aws_instance']
+  aws_instance: ['aws_instance'],
+  aws_db_instance: ['aws_db_instance'],
+  aws_rds_cluster: ['aws_rds_cluster'],
+  aws_s3_bucket: ['aws_s3_bucket'],
+  aws_iam_user: ['aws_iam_user'],
+  aws_iam_group: ['aws_iam_group'],
+  aws_iam_role: ['aws_iam_role'],
+  aws_iam_policy: ['aws_iam_policy'],
+  aws_security_group: ['aws_security_group'],
+  aws_eks_cluster: ['aws_eks_cluster'],
+  aws_ecs_service: ['aws_ecs_service'],
+  aws_lambda_function: ['aws_lambda_function'],
+  aws_route53_zone: ['aws_route53_zone'],
+  aws_secretsmanager_secret: ['aws_secretsmanager_secret'],
+  aws_kms_key: ['aws_kms_key'],
+  aws_sqs_queue: ['aws_sqs_queue'],
+  aws_sns_topic: ['aws_sns_topic']
 }
 
 const CONFIG_FILE_EXTENSIONS = new Set(['.tf', '.tfvars', '.hcl', '.json'])
@@ -82,6 +98,54 @@ function inferEksNodegroupName(tags: Record<string, string> | undefined): string
   return valueFromTagKeys(tags, EKS_NODEGROUP_TAG_KEYS)
 }
 
+function stringCandidate(values: Record<string, unknown>, key: string): string {
+  const value = values[key]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function resourceIdentifierCandidates(values: Record<string, unknown>, tags: Record<string, string>): string[] {
+  return [
+    stringCandidate(values, 'id'),
+    stringCandidate(values, 'arn'),
+    stringCandidate(values, 'name'),
+    stringCandidate(values, 'bucket'),
+    stringCandidate(values, 'identifier'),
+    stringCandidate(values, 'db_instance_identifier'),
+    stringCandidate(values, 'cluster_identifier'),
+    stringCandidate(values, 'group_name'),
+    stringCandidate(values, 'user_name'),
+    stringCandidate(values, 'role_name'),
+    stringCandidate(values, 'policy_name'),
+    stringCandidate(values, 'function_name'),
+    stringCandidate(values, 'queue_name'),
+    stringCandidate(values, 'key_id'),
+    stringCandidate(values, 'zone_id'),
+    stringCandidate(values, 'service_name'),
+    stringCandidate(values, 'cluster_name'),
+    stringCandidate(values, 'instance_id'),
+    tags.Name?.trim() ?? ''
+  ].filter(Boolean)
+}
+
+function resourceNameCandidates(values: Record<string, unknown>, tags: Record<string, string>): string[] {
+  return [
+    stringCandidate(values, 'name'),
+    stringCandidate(values, 'bucket'),
+    stringCandidate(values, 'identifier'),
+    stringCandidate(values, 'db_instance_identifier'),
+    stringCandidate(values, 'cluster_identifier'),
+    stringCandidate(values, 'group_name'),
+    stringCandidate(values, 'user_name'),
+    stringCandidate(values, 'role_name'),
+    stringCandidate(values, 'policy_name'),
+    stringCandidate(values, 'function_name'),
+    stringCandidate(values, 'queue_name'),
+    stringCandidate(values, 'service_name'),
+    stringCandidate(values, 'cluster_name'),
+    tags.Name?.trim() ?? ''
+  ].filter(Boolean)
+}
+
 function detectEksNodegroupStateMatches(
   inventory: TerraformResourceInventoryItem[],
   target: TerraformAdoptionTarget
@@ -129,7 +193,8 @@ function detectStateMatches(
     const tags = normalizedTags(values)
     const matches: TerraformAdoptionStateMatch[] = []
 
-    if (typeof values.id === 'string' && values.id === target.identifier) {
+    const identifierCandidates = resourceIdentifierCandidates(values, tags)
+    if (identifierCandidates.includes(target.identifier)) {
       matches.push({
         address: item.address,
         resourceType: item.type,
@@ -147,14 +212,16 @@ function detectStateMatches(
       })
     }
 
-    const stateName = typeof values.instance_id === 'string' ? values.instance_id : tags.Name ?? ''
-    if (target.name && stateName === target.name) {
-      matches.push({
-        address: item.address,
-        resourceType: item.type,
-        matchedOn: 'name',
-        matchedValue: target.name
-      })
+    if (target.name) {
+      const stateNames = resourceNameCandidates(values, tags)
+      if (stateNames.includes(target.name)) {
+        matches.push({
+          address: item.address,
+          resourceType: item.type,
+          matchedOn: 'name',
+          matchedValue: target.name
+        })
+      }
     }
 
     return dedupeStateMatches(matches)
