@@ -631,10 +631,9 @@ export type Ec2SshKeySuggestion = {
 }
 
 export type Ec2ChosenSshKey = {
-  stagedPath: string
-  originalPath: string
   vaultEntryId: string
   vaultEntryName: string
+  sourceLabel: string
 }
 
 export type Ec2SnapshotSummary = {
@@ -1281,6 +1280,25 @@ export type VaultEntryUsage = {
   resourceLabel: string
 }
 
+export type VaultSshKeyInspectionSource =
+  | 'metadata-inline'
+  | 'metadata-path'
+  | 'source-path'
+  | 'legacy-staged-path'
+  | 'derived-from-private-key'
+  | 'unavailable'
+
+export type VaultSshKeyInspection = {
+  entryId: string
+  entryName: string
+  kind: Extract<VaultEntryKind, 'pem' | 'ssh-key'>
+  keyNameHints: string[]
+  fingerprintSha256: string
+  fingerprintMd5: string
+  publicKeySource: VaultSshKeyInspectionSource
+  publicKeyAvailable: boolean
+}
+
 export type VaultEntrySummary = {
   id: string
   kind: VaultEntryKind
@@ -1450,6 +1468,11 @@ export type DbConnectionHelperSnippet = {
   sensitive: boolean
 }
 
+export type DbConnectionSecretHandling =
+  | 'persisted-local-vault'
+  | 'runtime-secrets-manager'
+  | 'ephemeral-manual'
+
 export type DbConnectionResolutionResult = {
   presetId: string
   displayName: string
@@ -1464,6 +1487,8 @@ export type DbConnectionResolutionResult = {
   credentialSourceKind: DbConnectionCredentialSourceKind
   credentialSourceRef: string
   sourceSummary: string
+  secretHandling: DbConnectionSecretHandling
+  secretHandlingSummary: string
   warnings: string[]
   snippets: DbConnectionHelperSnippet[]
   terminalCommand: string
