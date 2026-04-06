@@ -1469,6 +1469,11 @@ export type DbConnectionHelperSnippet = {
   sensitive: boolean
 }
 
+export type DbConnectionSecretHandling =
+  | 'persisted-local-vault'
+  | 'runtime-secrets-manager'
+  | 'ephemeral-manual'
+
 export type DbConnectionResolutionResult = {
   presetId: string
   displayName: string
@@ -1483,6 +1488,8 @@ export type DbConnectionResolutionResult = {
   credentialSourceKind: DbConnectionCredentialSourceKind
   credentialSourceRef: string
   sourceSummary: string
+  secretHandling: DbConnectionSecretHandling
+  secretHandlingSummary: string
   warnings: string[]
   snippets: DbConnectionHelperSnippet[]
   terminalCommand: string
