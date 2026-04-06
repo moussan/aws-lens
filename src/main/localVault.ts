@@ -118,12 +118,16 @@ function sanitizeKind(value: unknown): VaultEntryKind {
 function sanitizeOrigin(value: unknown): VaultOrigin {
   switch (value) {
     case 'manual':
-    case 'imported-file':
+    case 'imported':
     case 'aws-secrets-manager':
-    case 'aws-iam':
+    case 'aws-ssm':
     case 'generated':
     case 'unknown':
       return value
+    case 'imported-file':
+      return 'imported'
+    case 'aws-iam':
+      return 'unknown'
     default:
       return DEFAULT_VAULT_ORIGIN
   }

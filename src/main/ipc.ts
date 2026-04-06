@@ -154,7 +154,7 @@ async function importSshPrivateKeyToVault(sourcePath: string): Promise<Ec2Chosen
       fileName: baseName,
       publicKey
     },
-    origin: 'imported-file',
+    origin: 'imported',
     rotationState: 'not-applicable'
   })
 
