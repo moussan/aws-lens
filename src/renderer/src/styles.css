@@ -1316,13 +1316,31 @@ button.overview-tile.clickable.active strong {
 
 .overview-tab-bar {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 0.55rem;
   padding: 0.35rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 16px;
   background: rgba(12, 15, 20, 0.54);
   backdrop-filter: blur(16px);
+}
+
+.overview-tab-bar__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.overview-tab-bar__status {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.overview-tab-bar__status .freshness-indicator {
+  min-height: 44px;
 }
 
 .overview-tab {
@@ -1349,6 +1367,22 @@ button.overview-tile.clickable.active strong {
   border-color: rgba(223, 105, 42, 0.3);
   background: linear-gradient(180deg, rgba(223, 105, 42, 0.18), rgba(223, 105, 42, 0.08));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+@media (max-width: 1040px) {
+  .overview-tab-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .overview-tab-bar__tabs,
+  .overview-tab-bar__status {
+    width: 100%;
+  }
+
+  .overview-tab-bar__status {
+    margin-left: 0;
+  }
 }
 
 .overview-chip-row {

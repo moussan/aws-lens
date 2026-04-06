@@ -6,11 +6,11 @@ import type {
   LoadBalancerTimelineEvent,
   LoadBalancerWorkspace
 } from '@shared/types'
+import { deleteLoadBalancer, getCachedQuerySnapshot, listEc2Instances, listLoadBalancerWorkspaces } from './api'
 import { ConfirmButton } from './ConfirmButton'
 import { FreshnessIndicator, useFreshnessState } from './freshness'
 import { SvcState } from './SvcState'
 import './load-balancers.css'
-import { deleteLoadBalancer, listEc2Instances, listLoadBalancerWorkspaces } from './workspaceApi'
 
 type ColKey = 'name' | 'type' | 'scheme' | 'state' | 'dnsName' | 'listeners' | 'targets'
 type SideTab = 'details' | 'targets' | 'rules' | 'timeline'
@@ -94,7 +94,9 @@ export function WorkspaceApp({
   const [visCols, setVisCols] = useState<Set<ColKey>>(() => new Set(COLUMNS.map((column) => column.key)))
   const [sideTab, setSideTab] = useState<SideTab>('details')
   const [appliedFocusToken, setAppliedFocusToken] = useState(0)
-  const { freshness, beginRefresh, completeRefresh, failRefresh } = useFreshnessState({ staleAfterMs: 5 * 60 * 1000 })
+  const { freshness, beginRefresh, completeRefresh, failRefresh, replaceFetchedAt } = useFreshnessState({
+    staleAfterMs: 5 * 60 * 1000
+  })
 
   const selected = useMemo(() => workspaces.find((workspace) => workspace.summary.arn === selectedArn) ?? null, [workspaces, selectedArn])
   const selectedListener = useMemo(() => selected?.listeners.find((listener) => listener.arn === selectedListenerArn) ?? null, [selected, selectedListenerArn])
@@ -153,14 +155,25 @@ export function WorkspaceApp({
   }
 
   async function load(reason: 'initial' | 'manual' | 'background' = 'manual') {
+    const workspaceArgs = [connection]
+    const workspaceSnapshot = getCachedQuerySnapshot<LoadBalancerWorkspace[]>('load-balancers', 'listLoadBalancerWorkspaces', workspaceArgs)
+
     beginRefresh(reason)
+    replaceFetchedAt(workspaceSnapshot.fetchedAt, workspaceSnapshot.source)
     setLoading(true)
     setError('')
+
+    if (workspaceSnapshot.value) {
+      setWorkspaces(workspaceSnapshot.value)
+      pickDefaults(workspaceSnapshot.value)
+    }
+
     try {
       const loadBalancers = await listLoadBalancerWorkspaces(connection)
+      const resolvedWorkspaceSnapshot = getCachedQuerySnapshot<LoadBalancerWorkspace[]>('load-balancers', 'listLoadBalancerWorkspaces', workspaceArgs)
       setWorkspaces(loadBalancers)
       pickDefaults(loadBalancers)
-      completeRefresh()
+      completeRefresh(resolvedWorkspaceSnapshot.fetchedAt ?? Date.now(), resolvedWorkspaceSnapshot.source ?? 'live')
     } catch (loadError) {
       failRefresh()
       setError(loadError instanceof Error ? loadError.message : String(loadError))

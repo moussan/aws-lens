@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { AwsCapabilityHint, AwsConnection, CostBreakdown, InsightItem, OverviewAccountContext, OverviewMetrics, OverviewStatistics, RegionMetric, RegionalSignal, RelationshipMap, ServiceId, ServiceRelationship, TagSearchResult } from '@shared/types'
 import { useAwsPageConnection } from './AwsPage'
-import { getCostBreakdown, getOverviewAccountContext, getOverviewMetrics, getOverviewStatistics, getRelationshipMap, searchByTag } from './api'
+import { getCachedQuerySnapshot, getCostBreakdown, getOverviewAccountContext, getOverviewMetrics, getOverviewStatistics, getRelationshipMap, searchByTag } from './api'
+import { FreshnessIndicator, useFreshnessState } from './freshness'
 import { SvcState, variantForError } from './SvcState'
 
 type OverviewTab = 'overview' | 'relationships' | 'statistics' | 'tags'
@@ -158,6 +159,11 @@ export function OverviewConsole({
   const [insightFilter, setInsightFilter] = useState<InsightFilter>('all')
   const [signalFilter, setSignalFilter] = useState<SignalFilter>('all')
   const regionalLoadTokenRef = useRef(0)
+  const lastRegionalLoadScopeRef = useRef<string | null>(null)
+  const lastRegionalRefreshNonceRef = useRef(refreshNonce)
+  const { freshness, beginRefresh, completeRefresh, failRefresh, replaceFetchedAt } = useFreshnessState({
+    staleAfterMs: 5 * 60 * 1000
+  })
 
   const availableRegions = useMemo(
     () => connectionState.regions.map((item) => item.id),
@@ -167,29 +173,64 @@ export function OverviewConsole({
   // Auto-load regional overview when connection is ready or refresh is triggered
   useEffect(() => {
     if (connectionState.connection && connectionState.connected) {
-      void loadRegionalOverview(connectionState.connection)
+      const scopeKey = `${connectionState.connection.sessionId}:${connectionState.region}`
+      let reason: 'initial' | 'manual' | 'selection' = 'initial'
+
+      if (lastRegionalLoadScopeRef.current === null) {
+        reason = 'initial'
+      } else if (lastRegionalLoadScopeRef.current !== scopeKey) {
+        reason = 'selection'
+      } else if (lastRegionalRefreshNonceRef.current !== refreshNonce) {
+        reason = 'manual'
+      } else {
+        reason = 'manual'
+      }
+
+      lastRegionalLoadScopeRef.current = scopeKey
+      lastRegionalRefreshNonceRef.current = refreshNonce
+      void loadRegionalOverview(connectionState.connection, reason)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectionState.connection, connectionState.connected, connectionState.region, refreshNonce])
 
-  async function loadRegionalOverview(connection: AwsConnection) {
+  async function loadRegionalOverview(connection: AwsConnection, reason: 'initial' | 'manual' | 'selection' = 'manual') {
     const loadToken = regionalLoadTokenRef.current + 1
     regionalLoadTokenRef.current = loadToken
-    setLoading(true)
-    setSupplementalLoading(true)
     setPageError('')
-    setMetrics(null)
-    setStatistics(null)
-    setAccountContext(null)
-    setRelationships(null)
-    setCostBreakdown(null)
+
+    const metricsArgs = [connection, [connection.region]]
+    const sharedArgs = [connection]
+    const metricsSnapshot = getCachedQuerySnapshot<OverviewMetrics>('overview', 'getOverviewMetrics', metricsArgs)
+    const statisticsSnapshot = getCachedQuerySnapshot<OverviewStatistics>('overview', 'getOverviewStatistics', sharedArgs)
+    const accountContextSnapshot = getCachedQuerySnapshot<OverviewAccountContext>('overview', 'getOverviewAccountContext', sharedArgs)
+    const relationshipsSnapshot = getCachedQuerySnapshot<RelationshipMap>('overview', 'getRelationshipMap', sharedArgs)
+    const costSnapshot = getCachedQuerySnapshot<CostBreakdown>('overview', 'getCostBreakdown', sharedArgs)
+    const retainedMetrics = metricsSnapshot.value ?? metrics
+    const retainedStatistics = statisticsSnapshot.value ?? statistics
+    const retainedAccountContext = accountContextSnapshot.value ?? accountContext
+    const retainedRelationships = relationshipsSnapshot.value ?? relationships
+    const retainedCostBreakdown = costSnapshot.value ?? costBreakdown
+
+    beginRefresh(reason)
+    replaceFetchedAt(metricsSnapshot.fetchedAt, metricsSnapshot.source)
+    setLoading(!retainedMetrics)
+    setSupplementalLoading(true)
+    setMetrics(retainedMetrics)
+    setStatistics(retainedStatistics)
+    setAccountContext(retainedAccountContext)
+    setRelationships(retainedRelationships)
+    setCostBreakdown(retainedCostBreakdown)
+
     try {
       const nextMetrics = await getOverviewMetrics(connection, [connection.region])
       if (regionalLoadTokenRef.current !== loadToken) {
         return
       }
+
+      const resolvedMetricsSnapshot = getCachedQuerySnapshot<OverviewMetrics>('overview', 'getOverviewMetrics', metricsArgs)
       setMetrics(nextMetrics)
       setLoading(false)
+      completeRefresh(resolvedMetricsSnapshot.fetchedAt ?? Date.now(), resolvedMetricsSnapshot.source ?? 'live')
 
       void Promise.allSettled([
         getOverviewStatistics(connection),
@@ -201,20 +242,25 @@ export function OverviewConsole({
           return
         }
 
-        setStatistics(statisticsResult.status === 'fulfilled' ? statisticsResult.value : null)
-        setAccountContext(accountContextResult.status === 'fulfilled' ? accountContextResult.value : null)
-        setRelationships(relationshipsResult.status === 'fulfilled' ? relationshipsResult.value : null)
-        setCostBreakdown(costResult.status === 'fulfilled' ? costResult.value : null)
+        setStatistics(statisticsResult.status === 'fulfilled' ? statisticsResult.value : retainedStatistics)
+        setAccountContext(accountContextResult.status === 'fulfilled' ? accountContextResult.value : retainedAccountContext)
+        setRelationships(relationshipsResult.status === 'fulfilled' ? relationshipsResult.value : retainedRelationships)
+        setCostBreakdown(costResult.status === 'fulfilled' ? costResult.value : retainedCostBreakdown)
         setSupplementalLoading(false)
       })
     } catch (error) {
       if (regionalLoadTokenRef.current !== loadToken) {
         return
       }
-      setAccountContext(null)
+      failRefresh()
       setPageError(error instanceof Error ? error.message : String(error))
       setLoading(false)
       setSupplementalLoading(false)
+      setMetrics(retainedMetrics)
+      setStatistics(retainedStatistics)
+      setAccountContext(retainedAccountContext)
+      setRelationships(retainedRelationships)
+      setCostBreakdown(retainedCostBreakdown)
     }
   }
 
@@ -222,6 +268,19 @@ export function OverviewConsole({
     if (!connectionState.connection || !connectionState.connected) return
     setGlobalLoading(true)
     setPageError('')
+
+    const metricsArgs = [connectionState.connection, availableRegions]
+    const costArgs = [connectionState.connection]
+    const metricsSnapshot = getCachedQuerySnapshot<OverviewMetrics>('overview', 'getOverviewMetrics', metricsArgs)
+    const costSnapshot = getCachedQuerySnapshot<CostBreakdown>('overview', 'getCostBreakdown', costArgs)
+
+    if (metricsSnapshot.value) {
+      setGlobalMetrics(metricsSnapshot.value)
+    }
+    if (costSnapshot.value) {
+      setCostBreakdown(costSnapshot.value)
+    }
+
     try {
       const [nextMetrics, nextCost] = await Promise.all([
         getOverviewMetrics(connectionState.connection, availableRegions),
@@ -302,16 +361,21 @@ export function OverviewConsole({
         <>
           {/* ── Tab bar ──────────────────────────────────────── */}
           <nav className="overview-tab-bar">
-            {(Object.keys(tabLabels) as OverviewTab[]).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={tab === value ? 'overview-tab active' : 'overview-tab'}
-                onClick={() => setTab(value)}
-              >
-                {tabLabels[value]}
-              </button>
-            ))}
+            <div className="overview-tab-bar__tabs">
+              {(Object.keys(tabLabels) as OverviewTab[]).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={tab === value ? 'overview-tab active' : 'overview-tab'}
+                  onClick={() => setTab(value)}
+                >
+                  {tabLabels[value]}
+                </button>
+              ))}
+            </div>
+            <div className="overview-tab-bar__status">
+              <FreshnessIndicator freshness={freshness} label="Regional snapshot" staleLabel="Refresh regional view" />
+            </div>
           </nav>
 
           {/* ── Global Overview (all tabs) ────────────────────── */}
