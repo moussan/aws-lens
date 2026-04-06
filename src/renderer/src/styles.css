@@ -5644,6 +5644,42 @@ button.overview-tile.clickable.active strong {
   word-break: break-word;
 }
 
+.vault-manager-related-pairs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.vault-manager-related-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.85rem 0.9rem;
+  border-radius: 14px;
+  border: 1px solid rgba(123, 146, 171, 0.12);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.vault-manager-related-pair strong {
+  color: #eef4fb;
+  font-size: 0.9rem;
+}
+
+.vault-manager-related-pair__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.vault-manager-related-pair__meta span {
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(74, 143, 231, 0.14);
+  color: #d8e9fb;
+  font-size: 0.76rem;
+  word-break: break-word;
+}
+
 .vault-manager-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
