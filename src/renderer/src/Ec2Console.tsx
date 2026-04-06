@@ -34,6 +34,7 @@ import type {
   SsmSessionSummary,
   SubnetSummary,
   TerraformAdoptionDetectionResult,
+  TerraformAdoptionCodegenResult,
   TerraformAdoptionMappingResult,
   TerraformAdoptionTarget,
   TerraformProjectListItem,
@@ -98,7 +99,7 @@ import {
   terminateEc2Instance
 } from './ec2Api'
 import { ConfirmButton } from './ConfirmButton'
-import { detectAdoption, listProjects as listTerraformProjects, mapAdoption } from './terraformApi'
+import { detectAdoption, generateAdoptionCode, listProjects as listTerraformProjects, mapAdoption } from './terraformApi'
 
 type MainTab = 'instances' | 'volumes' | 'snapshots'
 type SideTab = 'overview' | 'ssm' | 'timeline'
@@ -709,6 +710,10 @@ export function Ec2Console({
   const [adoptionMappingLoading, setAdoptionMappingLoading] = useState(false)
   const [adoptionMappingError, setAdoptionMappingError] = useState('')
   const adoptionMappingRequestRef = useRef(0)
+  const [adoptionCodegen, setAdoptionCodegen] = useState<TerraformAdoptionCodegenResult | null>(null)
+  const [adoptionCodegenLoading, setAdoptionCodegenLoading] = useState(false)
+  const [adoptionCodegenError, setAdoptionCodegenError] = useState('')
+  const adoptionCodegenRequestRef = useRef(0)
 
   /* ── Snapshots state ─────────────────────────────────────── */
   const [snapshots, setSnapshots] = useState<Ec2SnapshotSummary[]>([])
@@ -995,6 +1000,47 @@ export function Ec2Console({
     }
   }
 
+  async function loadAdoptionCodegen(
+    nextDetail: Ec2InstanceDetail | null,
+    project: TerraformProjectListItem | null,
+    mapping: TerraformAdoptionMappingResult | null
+  ): Promise<void> {
+    const requestId = adoptionCodegenRequestRef.current + 1
+    adoptionCodegenRequestRef.current = requestId
+
+    if (!nextDetail || !project || !mapping || adoptionDetection?.managedProjectCount !== 0) {
+      if (requestId === adoptionCodegenRequestRef.current) {
+        setAdoptionCodegen(null)
+        setAdoptionCodegenError('')
+        setAdoptionCodegenLoading(false)
+      }
+      return
+    }
+
+    setAdoptionCodegenLoading(true)
+    setAdoptionCodegenError('')
+    try {
+      const result = await generateAdoptionCode(
+        terraformContextKey(connection),
+        project.id,
+        connection,
+        buildEc2AdoptionTarget(connection, nextDetail)
+      )
+      if (requestId === adoptionCodegenRequestRef.current) {
+        setAdoptionCodegen(result)
+      }
+    } catch (error) {
+      if (requestId === adoptionCodegenRequestRef.current) {
+        setAdoptionCodegen(null)
+        setAdoptionCodegenError(error instanceof Error ? error.message : 'Terraform code generation preview failed.')
+      }
+    } finally {
+      if (requestId === adoptionCodegenRequestRef.current) {
+        setAdoptionCodegenLoading(false)
+      }
+    }
+  }
+
   function handleManageInTerraform(): void {
     adoptionSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     if (!detail) return
@@ -1047,6 +1093,10 @@ export function Ec2Console({
   }, [connection.region, connection.sessionId, detail?.instanceId, selectedAdoptionProject?.id, adoptionDetection?.managedProjectCount])
 
   useEffect(() => {
+    void loadAdoptionCodegen(detail, selectedAdoptionProject, adoptionMapping)
+  }, [connection.region, connection.sessionId, detail?.instanceId, selectedAdoptionProject?.id, adoptionMapping?.suggestedAddress, adoptionDetection?.managedProjectCount])
+
+  useEffect(() => {
     setSelectedAdoptionProject(null)
     setSelectedProjectCandidateId('')
     setShowProjectPicker(false)
@@ -1055,6 +1105,9 @@ export function Ec2Console({
     setAdoptionMapping(null)
     setAdoptionMappingError('')
     setAdoptionMappingLoading(false)
+    setAdoptionCodegen(null)
+    setAdoptionCodegenError('')
+    setAdoptionCodegenLoading(false)
   }, [detail?.instanceId])
 
   /* ── Recommendations state ──────────────────────────────── */
@@ -2612,6 +2665,76 @@ export function Ec2Console({
                                 {adoptionMapping.warnings.length > 0 && (
                                   <div className="ec2-adoption-list">
                                     {adoptionMapping.warnings.map((warning) => (
+                                      <div key={warning} className="ec2-adoption-row">
+                                        <span className="ec2-adoption-label config">Review</span>
+                                        <small>{warning}</small>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
+                        {selectedAdoptionProject && adoptionDetection.managedProjectCount === 0 && (
+                          <div className="ec2-adoption-codegen">
+                            <div className="ec2-adoption-mapping-head">
+                              <div>
+                                <h4>Code Generation Preview</h4>
+                                <div className="ec2-sidebar-hint">
+                                  Preview the Terraform file placement, generated HCL skeleton, and import command before applying any file changes.
+                                </div>
+                              </div>
+                              {adoptionCodegenLoading && <span className="ec2-adoption-pill config">Generating...</span>}
+                            </div>
+                            {adoptionCodegenError && <div className="ec2-sidebar-hint ec2-adoption-error">{adoptionCodegenError}</div>}
+                            {adoptionCodegen && (
+                              <>
+                                <div className="ec2-adoption-mapping-grid">
+                                  <div className="ec2-adoption-row">
+                                    <span className="ec2-adoption-label">File</span>
+                                    <code>{adoptionCodegen.filePlan.suggestedFileName}</code>
+                                    <small>{adoptionCodegen.filePlan.action === 'append' ? 'Append existing file' : 'Create new file'}</small>
+                                  </div>
+                                  <div className="ec2-adoption-row">
+                                    <span className="ec2-adoption-label config">Module</span>
+                                    <code>{adoptionCodegen.filePlan.moduleDisplayPath}</code>
+                                    <small>{adoptionCodegen.filePlan.reason}</small>
+                                  </div>
+                                  <div className="ec2-adoption-row">
+                                    <span className="ec2-adoption-label config">Import</span>
+                                    <code>{adoptionCodegen.mapping.importId}</code>
+                                    <small>Working dir {adoptionCodegen.workingDirectory}</small>
+                                  </div>
+                                </div>
+                                <div className="ec2-adoption-row">
+                                  <span className="ec2-adoption-label">Target path</span>
+                                  <code>{adoptionCodegen.filePlan.suggestedFilePath}</code>
+                                  {adoptionCodegen.filePlan.existingFiles.length > 0 && (
+                                    <small>Module files: {adoptionCodegen.filePlan.existingFiles.join(', ')}</small>
+                                  )}
+                                </div>
+                                <div className="ec2-adoption-code-preview">
+                                  <span className="ec2-adoption-label">HCL Preview</span>
+                                  <pre className="s3-preview-text">{adoptionCodegen.resourceBlock}</pre>
+                                </div>
+                                <div className="ec2-adoption-code-preview">
+                                  <span className="ec2-adoption-label config">Import Command</span>
+                                  <pre className="s3-preview-text">{adoptionCodegen.importCommand}</pre>
+                                </div>
+                                {adoptionCodegen.notes.length > 0 && (
+                                  <div className="ec2-adoption-list">
+                                    {adoptionCodegen.notes.map((note) => (
+                                      <div key={note} className="ec2-adoption-row">
+                                        <span className="ec2-adoption-label">Plan</span>
+                                        <small>{note}</small>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {adoptionCodegen.warnings.length > 0 && (
+                                  <div className="ec2-adoption-list">
+                                    {adoptionCodegen.warnings.map((warning) => (
                                       <div key={warning} className="ec2-adoption-row">
                                         <span className="ec2-adoption-label config">Review</span>
                                         <small>{warning}</small>

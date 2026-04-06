@@ -413,6 +413,16 @@
   background: rgba(15, 25, 38, 0.82);
 }
 
+.ec2-adoption-codegen {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(145, 176, 207, 0.14);
+  background: rgba(12, 21, 33, 0.86);
+}
+
 .ec2-adoption-mapping-head {
   display: flex;
   align-items: flex-start;
@@ -430,6 +440,11 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
+}
+
+.ec2-adoption-code-preview {
+  display: grid;
+  gap: 8px;
 }
 
 .ec2-project-picker-dialog {

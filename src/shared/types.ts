@@ -4022,6 +4022,31 @@ export type TerraformAdoptionMappingResult = {
   relatedResources: TerraformAdoptionRelatedResourceMatch[]
 }
 
+export type TerraformAdoptionCodegenFilePlan = {
+  moduleDirectory: string
+  moduleDisplayPath: string
+  suggestedFilePath: string
+  suggestedFileName: string
+  action: 'append' | 'create'
+  reason: string
+  existingFiles: string[]
+}
+
+export type TerraformAdoptionCodegenResult = {
+  supported: boolean
+  checkedAt: string
+  projectId: string
+  projectName: string
+  target: TerraformAdoptionTarget
+  mapping: TerraformAdoptionMappingResult
+  filePlan: TerraformAdoptionCodegenFilePlan
+  resourceBlock: string
+  importCommand: string
+  workingDirectory: string
+  notes: string[]
+  warnings: string[]
+}
+
 export type TerraformProgressEvent = {
   address: string
   status: string
