@@ -78,6 +78,7 @@ const COST_SECRET = 0.4
 const COST_KEY_PAIR = 0
 const COST_CW_ALARM = 0.1
 const COST_EXPLORER_METRIC = 'UnblendedCost' as const
+const COST_EXPLORER_METRIC_LABEL = 'Unblended cost'
 const BILLING_HOME_REGION = 'us-east-1'
 const OWNERSHIP_TAG_KEYS: GovernanceTagKey[] = ['Owner', 'Environment', 'Project', 'CostCenter']
 const ORGANIZATIONS_HOME_REGION = 'us-east-1'
@@ -1176,7 +1177,7 @@ function addMatchedTaggedResource(
 function getCurrentMonthTimePeriod(): { start: Date; end: Date; label: string } {
   const now = new Date()
   const start = new Date(now.getFullYear(), now.getMonth(), 1)
-  const end = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1)
   const label = `${start.toLocaleString('en', { month: 'short' })} ${start.getFullYear()}`
 
   return { start, end, label }
@@ -1355,7 +1356,12 @@ async function fetchCurrentMonthCostBreakdown(connection: AwsConnection): Promis
 
   entries.sort((a, b) => b.amount - a.amount)
 
-  return { entries, total: roundCurrency(exactTotal), period: label }
+  return {
+    entries,
+    total: roundCurrency(exactTotal),
+    period: label,
+    metric: COST_EXPLORER_METRIC_LABEL
+  }
 }
 
 async function getMonthlyCostForTag(
@@ -1662,6 +1668,7 @@ export async function getOverviewAccountContext(connection: AwsConnection): Prom
     } else if (payerVisibility === 'member-or-standalone') {
       notes.push('Only single-account spend is visible from the current credentials, so organization-level grouping is inferred as limited.')
     }
+    notes.push(`Cost metric: ${COST_EXPLORER_METRIC_LABEL}.`)
 
     if (ownershipHints.every((hint) => hint.taggedAmount === 0) && totalCost.total > 0) {
       notes.push('Ownership hints are empty for the current month. AWS cost allocation tags may not be activated for Owner, Environment, Project, or CostCenter.')
